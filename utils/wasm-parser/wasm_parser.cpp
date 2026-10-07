@@ -40,7 +40,11 @@
 /// (column in bytes), all omitted when unknown (an error reported by throwing has no token);
 /// "expected" lists what the parser would have accepted there, omitted when there is nothing to
 /// say. "highlights" covers what parsed before the error, so an editor can keep coloring while
-/// the user types. All highlight offsets are byte offsets, end-exclusive; the types are the
+/// the user types. A statement that failed after its keyword committed also reports, after
+/// "error", the tree it built so far as "partial_ast", with an `Error` node in the slot that failed
+/// (see `Parsers/PartialASTCapture.h`); only a build with formatting has it, it is never present
+/// together with "ast", and `ch_format_json` rejects it. All highlight offsets are byte offsets,
+/// end-exclusive; the types are the
 /// visible names of `enum Highlight` (`keyword`, `identifier`, `function`, `alias`,
 /// `substitution`, `number`, `string`, `string_escape`, `string_metacharacter`).
 
@@ -55,6 +59,10 @@
 
 #if !defined(CLICKHOUSE_PARSER_NO_FORMATTING)
 #include <Parsers/ASTToJSON.h>
+#endif
+
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+#include <ASTError.h>
 #endif
 
 #include <wasm_sjlj.h>
@@ -319,6 +327,17 @@ extern "C" int serializeBody(void * argument)
     return 1;
 }
 
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+/// The "partial_ast" of a failed parse. Not read back: it contains an `Error` node, which
+/// `ch_format_json` rejects by design, so there is no round trip to hold it to.
+extern "C" int serializePartialBody(void * argument)
+{
+    const auto & request = *static_cast<const SerializeRequest *>(argument);
+    *request.json = DB::serializeASTToJSON(*request.ast);
+    return 1;
+}
+#endif
+
 /// Turns the boundary's `CH_PARSER_THREW` into the same answer a parse error gets, with the
 /// message of the exception that ended the call.
 int finish(int protected_call_result)
@@ -389,6 +408,9 @@ int ch_parse(const char * query, uint32_t size)
 {
     DB::ParserDiagnostics diagnostics;
     diagnostics.expected.enable_highlighting = true;
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    diagnostics.expected.enable_partial_ast_capture = true;
+#endif
 
     std::string error;
     DB::ASTPtr ast;
@@ -449,7 +471,35 @@ int ch_parse(const char * query, uint32_t size)
             out << ']';
         }
 
-        out << "},";
+        out << '}';
+
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+        /// The tree built before the failure. Not for a throw, which did not return through the
+        /// parser: what was captured before it is not the failure the message names.
+        if (parsed == 0 && diagnostics.expected.partial_ast)
+        {
+            const DB::ASTPtr & partial_ast = diagnostics.expected.partial_ast;
+            for (const auto & child : partial_ast->children)
+                if (auto * error_node = child->as<DB::ASTError>())
+                    error_node->setOffsets(query);
+
+            out << ",\"partial_ast\":";
+
+            std::string partial_ast_json;
+            SerializeRequest serialize_request{partial_ast.get(), &partial_ast_json};
+            if (chParserProtectedCall(serializePartialBody, &serialize_request) == 1)
+            {
+                out << partial_ast_json;
+            }
+            else
+            {
+                out << "null,\"partial_ast_error\":";
+                writeJSONText(chParserRecoveryMessage(), out);
+            }
+        }
+#endif
+
+        out << ',';
     }
 
     writeHighlights(diagnostics, query, out);

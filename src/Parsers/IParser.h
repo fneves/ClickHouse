@@ -87,6 +87,17 @@ struct Expected
     /// The caller must allocate and manage the map's lifetime.
     LiteralTokenMap * literal_token_map = nullptr;
 
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    /// Set by the caller, like `enable_highlighting`: statement parsers then capture the tree they
+    /// built so far before failing (see `Parsers/PartialASTCapture.h`). Only the standalone
+    /// WebAssembly parser is built with this.
+    bool enable_partial_ast_capture = false;
+    /// Outputs: the captured tree, with an `Error` node in the slot that failed, and the
+    /// `max_parsed_pos` it was captured at.
+    ASTPtr partial_ast;
+    const char * partial_ast_pos = nullptr;
+#endif
+
     /// 'description' should be statically allocated string.
     ALWAYS_INLINE void add(const char * current_pos, const char * description)
     {

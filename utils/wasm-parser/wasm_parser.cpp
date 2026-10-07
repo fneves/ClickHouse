@@ -471,7 +471,7 @@ int ch_parse(const char * query, uint32_t size)
             out << ']';
         }
 
-        out << '}';
+        out << "},";
 
 #if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
         /// The tree built before the failure. Not for a throw, which did not return through the
@@ -483,7 +483,7 @@ int ch_parse(const char * query, uint32_t size)
                 if (auto * error_node = child->as<DB::ASTError>())
                     error_node->setOffsets(query);
 
-            out << ",\"partial_ast\":";
+            out << "\"partial_ast\":";
 
             std::string partial_ast_json;
             SerializeRequest serialize_request{partial_ast.get(), &partial_ast_json};
@@ -496,10 +496,9 @@ int ch_parse(const char * query, uint32_t size)
                 out << "null,\"partial_ast_error\":";
                 writeJSONText(chParserRecoveryMessage(), out);
             }
+            out << ',';
         }
 #endif
-
-        out << ',';
     }
 
     writeHighlights(diagnostics, query, out);

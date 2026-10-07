@@ -95,6 +95,35 @@ and for one that does not (`SELECT 1 +`):
   reported by throwing (see below) carries only the message and, when known, the rightmost
   position the parser reached.
 
+When a statement fails after its keyword has committed, `ch_parse` also reports the tree it built
+so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
+
+```json
+{"error": {"message": "...", "begin": 13, "end": 13, "line": 1, "column": 14, "expected": ["..."]},
+ "partial_ast": {"type": "SelectQuery",
+                 "select": {"type": "ExpressionList", "children": [{"type": "Identifier", "name": "a"}]},
+                 "tables": {"type": "Error", "begin": 13, "end": 13, "expected": ["..."]}},
+ "highlights": [...]}
+```
+
+* It appears only together with `error`, so never together with `ast`: a query that parses has
+  no `partial_ast`. It is also absent when no statement keyword committed (`SELEC`), when the
+  error was reported by throwing, and in a `-DENABLE_FORMATTING=OFF` build. Statements capture
+  from `SELECT` (in its `FROM`-first form too): its select list, `FROM`, `PREWHERE`, `WHERE`,
+  `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` (with its `OFFSET` and `BY`) and `SETTINGS`.
+* Its root is the deepest statement node that captured: the one whose failure got furthest into
+  the query, and of statements nested in each other that failed at the same place, the outermost.
+  It is that statement itself, a `SelectQuery`, with no `SelectWithUnionQuery` around it. The
+  clauses that parsed before the failure are there as in `ast`.
+* The slot that failed holds an `Error` node instead of a clause: `begin` and `end` are byte
+  offsets of where the parser stopped, the rightmost position it recorded what it `expected`
+  there - the same list as in `error`. A broken expression is one `Error` in its clause. That
+  position can precede `error.begin`: for `SELECT 1 +`, the `Error` covers the `+`, while the
+  error token is the end of the input.
+* `ch_format_json` rejects a `partial_ast` (`Unknown AST node type in JSON: 'Error'`): `Error` has
+  no SQL form, and the document is not an `ast`. A tree that cannot be serialized is reported as
+  `"partial_ast": null` with `partial_ast_error` saying why, the way `ast_error` does.
+
 `ch_format_json` is the reverse half: it takes an `ast` document - from `ch_parse` here, or from
 `parseQueryToJSON` on a server - and formats it as SQL, one-line or multi-line. Anything wrong
 with the document (malformed JSON, an unknown node type, a field of the wrong shape, brackets

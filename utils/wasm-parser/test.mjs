@@ -295,6 +295,49 @@ if (hasAstJson) {
     }
 }
 
+{
+    /// A statement that fails after its keyword committed reports the tree built so far as
+    /// "partial_ast", with an `Error` node in the slot of the clause that failed. The "error" is
+    /// exactly what a parse without the capture reports. Only a build with AST JSON has it.
+    const incomplete = [
+        /// The query, the error token, the slot of the `Error` and its range, a slot parsed before it.
+        ['SELECT a FROM', [13, 13], 'tables', [13, 13], 'select'],
+        ['SELECT a FROM t WHERE', [21, 21], 'where', [21, 21], 'tables'],
+        ['SELECT a FROM t ORDER BY', [24, 24], 'order_by', [24, 24], 'tables'],
+        /// A broken expression is one `Error` in its clause. It covers the `+`, where the parser
+        /// last recorded what it expected, while the error token is the end of the input.
+        ['SELECT 1 +', [10, 10], 'select', [9, 10], null],
+    ];
+    for (const [sql, [errorBegin, errorEnd], slot, [begin, end], before] of incomplete) {
+        const r = parsed(sql);
+        check(`ch_parse fails for ${sql}`, !r.ok && r.doc?.ast === undefined);
+        check('...with the error a parse without the capture reports', r.doc?.error?.message === format(sql, 1).out
+            && r.doc?.error?.begin === errorBegin && r.doc?.error?.end === errorEnd);
+        if (hasAstJson) {
+            const partial = r.doc?.partial_ast;
+            check('...and a partial SelectQuery', partial?.type === 'SelectQuery');
+            check(`...with an Error in "${slot}" at [${begin}, ${end})`, partial?.[slot]?.type === 'Error'
+                && partial[slot].begin === begin && partial[slot].end === end
+                && Array.isArray(partial[slot].expected) && partial[slot].expected.length > 0);
+            if (before)
+                check(`...after the "${before}" that parsed`, typeof partial?.[before]?.type === 'string' && partial[before].type !== 'Error');
+        } else {
+            check('...and no partial_ast in this build', r.doc?.partial_ast === undefined);
+        }
+    }
+
+    const complete = parsed('SELECT 1');
+    check('SELECT 1 has no partial_ast', complete.ok && complete.doc?.partial_ast === undefined);
+    const noKeyword = parsed('SELEC');
+    check('SELEC has no partial_ast: no statement keyword committed', !noKeyword.ok && noKeyword.doc?.partial_ast === undefined);
+
+    if (hasAstJson) {
+        const partial = parsed('SELECT a FROM').doc?.partial_ast;
+        const back = call(JSON.stringify(partial), (ptr, len) => ch_format_json(ptr, len, 1));
+        check('ch_format_json rejects a partial_ast', !back.ok && /'Error'/.test(back.out));
+    }
+}
+
 /// --- The engine's stack -----------------------------------------------------------------------
 ///
 /// WebAssembly frames also take the engine's own stack, which `checkStackSize` cannot see, and

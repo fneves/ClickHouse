@@ -12,6 +12,7 @@
 #include <Parsers/ParserWithElement.h>
 #include <Parsers/ParserInsertQuery.h>
 #include <Parsers/ParserSetQuery.h>
+#include <Parsers/PartialASTCapture.h>
 #include <Parsers/InsertQuerySettingsPushDownVisitor.h>
 #include <Common/typeid_cast.h>
 
@@ -86,6 +87,26 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     /// Insertion data
     const char * data = nullptr;
 
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    /// The parts stay in the locals above until the whole query has parsed, so the tree a failure
+    /// captures is assembled from them; see `Parsers/PartialASTCapture.h`. Never the inline data.
+    auto tree_so_far = [&]() -> ASTPtr
+    {
+        auto partial = make_intrusive<ASTInsertQuery>();
+        partial->database = database;
+        partial->table = table;
+        partial->table_function = table_function;
+        partial->partition_by = partition_by_expr;
+        partial->columns = columns;
+        partial->select = select;
+        partial->settings_ast = settings_ast;
+        partial->infile = infile;
+        partial->compression = compression;
+        tryGetIdentifierNameInto(format, partial->format);
+        return partial;
+    };
+#endif
+
     if (s_with.ignore(pos, expected))
     {
         if (!ParserList(std::make_unique<ParserWithElement>(), std::make_unique<ParserToken>(TokenType::Comma))
@@ -109,20 +130,29 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     {
         /// Read function name
         if (!table_function_p.parse(pos, table_function, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "table_function");
             return false;
+        }
 
         /// Support insertion values with partition by.
         if (s_partition_by.ignore(pos, expected))
         {
             if (!exp_elem_p.parse(pos, partition_by_expr, expected))
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "partition_by");
                 return false;
+            }
         }
     }
     else
     {
         /// Read one word. It can be table or database name.
         if (!name_p.parse(pos, table, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "table");
             return false;
+        }
 
         /// If there is a dot, previous name was database name,
         /// so read table name after dot.
@@ -130,7 +160,10 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         {
             database = table;
             if (!name_p.parse(pos, table, expected))
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "table");
                 return false;
+            }
         }
     }
 
@@ -141,6 +174,9 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     {
         if (!columns_p.parse(pos, columns, expected))
         {
+            /// Captured before the rewind, for `INSERT INTO t (`; reported only if nothing gets further.
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "columns");
+
             /// Column list parsing failed entirely (e.g. "((SELECT ..." where the second '(' is not a valid column name).
             /// Rewind to before the '(' so it can be parsed as part of a SELECT query later.
             columns.reset();
@@ -154,6 +190,9 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
             /// If this fails, we want to rewind to before the lparen so we can later check for (SELECT ...)
             if (!s_rparen.ignore(pos, expected))
             {
+                /// Likewise, for `INSERT INTO t (a,`.
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "columns");
+
                 columns.reset();
                 pos = before_lparen;
             }
@@ -165,7 +204,10 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     {
         /// Read file name to process it later
         if (!infile_name_p.parse(pos, infile, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "infile");
             return false;
+        }
 
         /// Check for 'COMPRESSION' parameter (optional)
         if (s_compression.ignore(pos, expected))
@@ -173,7 +215,10 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
             /// Read compression name. Create parser for this purpose.
             ParserStringLiteral compression_p;
             if (!compression_p.parse(pos, compression, expected))
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "compression");
                 return false;
+            }
         }
     }
 
@@ -183,7 +228,10 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         /// Settings are written like SET query, so parse them with ParserSetQuery
         ParserSetQuery parser_settings(true);
         if (!parser_settings.parse(pos, settings_ast, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "settings_ast");
             return false;
+        }
     }
 
     String format_str;
@@ -204,7 +252,10 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     {
         /// If FORMAT is defined, read format name
         if (!name_p.parse(pos, format, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "format");
             return false;
+        }
 
         tryGetIdentifierNameInto(format, format_str);
     }
@@ -239,7 +290,10 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 
         /// FORMAT section is expected if we have input() in SELECT part
         if (s_format.ignore(pos, expected) && !name_p.parse(pos, format, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "format");
             return false;
+        }
 
         tryGetIdentifierNameInto(format, format_str);
     }

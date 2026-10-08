@@ -16,6 +16,7 @@
 #include <Parsers/ASTTableOverrides.h>
 #include <Parsers/ExpressionListParsers.h>
 #include <Parsers/ParserCreateQuery.h>
+#include <Parsers/PartialASTCapture.h>
 #include <Parsers/ParserDictionary.h>
 #include <Parsers/ParserDictionaryAttributeDeclaration.h>
 #include <Parsers/ParserProjectionSelectQuery.h>
@@ -28,6 +29,10 @@
 #include <Parsers/ASTColumnDeclaration.h>
 #include <Parsers/ASTOrderByElement.h>
 #include <Core/UUID.h>
+
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+#include <algorithm>
+#endif
 
 
 namespace DB
@@ -830,6 +835,40 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
     bool is_create_empty = false;
     bool is_clone_as = false;
 
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    /// The parts stay in the locals above until the whole query has parsed, so the tree a failure
+    /// captures is assembled from them, with the casts the success path makes; see
+    /// `Parsers/PartialASTCapture.h`.
+    auto tree_so_far = [&]() -> ASTPtr
+    {
+        auto partial = make_intrusive<ASTCreateQuery>();
+        partial->attach = attach;
+        partial->replace_table = replace;
+        partial->create_or_replace = or_replace;
+        partial->if_not_exists = if_not_exists;
+        partial->setIsTemporary(is_temporary);
+        partial->is_create_empty = is_create_empty;
+        partial->is_clone_as = is_clone_as;
+        partial->cluster = cluster_str;
+        if (table)
+        {
+            const auto & table_id = table->as<ASTTableIdentifier &>();
+            partial->database = table_id.getDatabase();
+            partial->table = table_id.getTable();
+            if (partial->database)
+                partial->children.push_back(partial->database);
+            if (partial->table)
+                partial->children.push_back(partial->table);
+        }
+        tryGetIdentifierNameInto(as_database, partial->as_database);
+        tryGetIdentifierNameInto(as_table, partial->as_table);
+        partial->set(partial->columns_list, columns_list);
+        partial->set(partial->storage, storage);
+        partial->set(partial->as_table_function, as_table_function);
+        return partial;
+    };
+#endif
+
     if (s_create.ignore(pos, expected))
     {
         if (s_or_replace.ignore(pos, expected))
@@ -851,7 +890,10 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         if_not_exists = true;
 
     if (!table_name_p.parse(pos, table, expected))
+    {
+        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "table_ast");
         return false;
+    }
 
     if (ParserKeyword{Keyword::TO_INNER_UUID}.ignore(pos, expected))
     {
@@ -882,7 +924,10 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
     if (s_on.ignore(pos, expected))
     {
         if (!ASTQueryWithOnCluster::parse(pos, cluster_str, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "cluster");
             return false;
+        }
     }
 
     auto * table_id = table->as<ASTTableIdentifier>();
@@ -931,8 +976,19 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
     {
         chassert(!storage);
         ASTPtr ast;
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+        const char * max_before = expected.max_parsed_pos;
+#endif
         if (!storage_p.parse(pos, ast, expected))
+        {
+            /// Storage is optional, so the parse goes on. Captured only if the storage parser itself
+            /// got further than both the parse before it and its first token: neither
+            /// `CREATE TABLE t AS SELECT a FROM` nor `CREATE TABLE t (a UInt8) BLAH` is a failed
+            /// storage definition.
+            PARTIAL_AST_SNAPSHOT(
+                expected, expected.max_parsed_pos > std::max(max_before, pos->begin) ? tree_so_far() : nullptr, pos, "storage");
             return false;
+        }
 
         storage = boost::static_pointer_cast<ASTStorage>(ast);
 
@@ -963,14 +1019,20 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
     {
         /// Columns and all table properties (indices, constraints, projections, primary_key)
         if (!table_properties_p.parse(pos, columns_list, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "columns_list");
             return false;
+        }
 
         /// We allow a trailing comma in the columns list for user convenience.
         /// Although it diverges from the SQL standard slightly.
         s_comma.ignore(pos, expected);
 
         if (!s_rparen.ignore(pos, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "columns_list");
             return false;
+        }
 
         auto storage_parse_result = parse_storage();
 
@@ -994,13 +1056,19 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         if ((storage_parse_result || is_temporary) && has_as)
         {
             if (!select_p.parse(pos, select, expected))
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "select");
                 return false;
+            }
         }
 
         if (!storage_parse_result && !is_temporary && has_as)
         {
             if (!table_function_p.parse(pos, as_table_function, expected))
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "as_table_function");
                 return false;
+            }
         }
 
         /// Will set default table engine if Storage clause was not parsed

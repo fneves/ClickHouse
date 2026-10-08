@@ -12,6 +12,7 @@
 #include <Parsers/ParserSelectWithUnionQuery.h>
 #include <Parsers/ParserSetQuery.h>
 #include <Parsers/ParserStringAndSubstitution.h>
+#include <Parsers/PartialASTCapture.h>
 #include <Parsers/parseDatabaseAndTableName.h>
 #include <Common/typeid_cast.h>
 
@@ -1241,29 +1242,52 @@ bool ParserAlterQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     else
         return false;
 
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    /// The database, the table and the cluster go into `query` as they parse; the object type is set
+    /// only at the end. See `Parsers/PartialASTCapture.h`.
+    auto tree_so_far = [&]() -> ASTPtr
+    {
+        auto partial = query->clone();
+        partial->as<ASTAlterQuery &>().alter_object = alter_object_type;
+        return partial;
+    };
+#endif
+
     if (alter_object_type == ASTAlterQuery::AlterObjectType::DATABASE)
     {
         if (!parseDatabaseAsAST(pos, expected, query->database))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "database_ast");
             return false;
+        }
 
         String cluster_str;
         if (ParserKeyword(Keyword::ON).ignore(pos, expected))
         {
             if (!ASTQueryWithOnCluster::parse(pos, cluster_str, expected))
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "cluster");
                 return false;
+            }
         }
         query->cluster = cluster_str;
     }
     else
     {
         if (!parseDatabaseAndTableAsAST(pos, expected, query->database, query->table))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "table_ast");
             return false;
+        }
 
         String cluster_str;
         if (ParserKeyword(Keyword::ON).ignore(pos, expected))
         {
             if (!ASTQueryWithOnCluster::parse(pos, cluster_str, expected))
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "cluster");
                 return false;
+            }
         }
         query->cluster = cluster_str;
     }
@@ -1271,7 +1295,10 @@ bool ParserAlterQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     ParserAlterCommandList p_command_list(alter_object_type);
     ASTPtr command_list;
     if (!p_command_list.parse(pos, command_list, expected))
+    {
+        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "command_list");
         return false;
+    }
 
     query->set(query->command_list, command_list);
     query->alter_object = alter_object_type;

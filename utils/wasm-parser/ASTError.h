@@ -35,4 +35,25 @@ public:
     void setOffsets(const char * query_begin);
 };
 
+/** A captured `INSERT`, `CREATE` or `ALTER` with the `Error` kept beside it rather than inside it.
+  *
+  * The slot that failed is often a typed member (`ASTCreateQuery::columns_list` is an `ASTColumns`)
+  * or a string (`ASTInsertQuery::format`), so it cannot hold an `Error`, and these nodes do not
+  * serialize `children`. `writeJSON` therefore writes the statement and adds `"<key>": <Error>` to
+  * its object, which is how a consumer sees it: as the value of the key that failed. Only keys that
+  * the statement leaves out when the slot is empty are accepted, so the key never appears twice.
+  */
+class ASTPartialStatement : public IAST
+{
+public:
+    ASTPtr statement;
+    ASTPtr error;
+    /// The JSON key of the failed slot in `statement`; statically allocated.
+    const char * key = nullptr;
+
+    String getID(char) const override { return "PartialStatement"; }
+    ASTPtr clone() const override;
+    void writeJSON(WriteBuffer & out) const override;
+};
+
 }

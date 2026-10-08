@@ -1,10 +1,46 @@
 #include <ASTError.h>
 
+#include <Parsers/ASTAlterQuery.h>
+#include <Parsers/ASTCreateQuery.h>
+#include <Parsers/ASTInsertQuery.h>
 #include <Parsers/ASTJSONHelpers.h>
+#include <Parsers/ASTToJSON.h>
+#include <Common/Exception.h>
+
+#include <algorithm>
+#include <string_view>
 
 
 namespace DB
 {
+
+namespace ErrorCodes
+{
+    extern const int LOGICAL_ERROR;
+}
+
+namespace
+{
+
+/// The keys a capture site may name, per statement: each one is written only when its slot is set,
+/// and a failed slot is empty, so the `Error` is the only value the key gets.
+bool isPartialStatementKey(const IAST & statement, std::string_view key)
+{
+    auto is_one_of = [&](std::initializer_list<std::string_view> keys)
+    {
+        return std::find(keys.begin(), keys.end(), key) != keys.end();
+    };
+
+    if (statement.as<ASTInsertQuery>())
+        return is_one_of({"table", "table_function", "partition_by", "infile", "compression", "settings_ast", "format", "columns"});
+    if (statement.as<ASTCreateQuery>())
+        return is_one_of({"table_ast", "cluster", "columns_list", "storage", "select", "as_table_function"});
+    if (statement.as<ASTAlterQuery>())
+        return is_one_of({"database_ast", "table_ast", "cluster", "command_list"});
+    return false;
+}
+
+}
 
 ASTPtr ASTError::clone() const
 {
@@ -32,6 +68,31 @@ void ASTError::setOffsets(const char * query_begin)
 {
     begin = static_cast<UInt64>(begin_pos - query_begin);
     end = static_cast<UInt64>(end_pos - query_begin);
+}
+
+ASTPtr ASTPartialStatement::clone() const
+{
+    auto res = make_intrusive<ASTPartialStatement>(*this);
+    res->children.clear();
+    res->statement = statement->clone();
+    res->error = error->clone();
+    res->children = {res->statement, res->error};
+    return res;
+}
+
+void ASTPartialStatement::writeJSON(WriteBuffer & out) const
+{
+    if (!isPartialStatementKey(*statement, key))
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "Key '{}' is not a capture slot of {}", key, statement->getID());
+
+    const String json = serializeASTToJSON(*statement);
+    if (json.empty() || json.back() != '}')
+        throw Exception(ErrorCodes::LOGICAL_ERROR, "The JSON of {} is not an object", statement->getID());
+
+    out.write(json.data(), json.size() - 1);
+    out << ",\"" << key << "\":";
+    error->writeJSON(out);
+    out << '}';
 }
 
 }

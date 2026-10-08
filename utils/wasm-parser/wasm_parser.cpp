@@ -63,6 +63,8 @@
 
 #if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
 #include <ASTError.h>
+#include <Parsers/ASTSelectQuery.h>
+#include <vector>
 #endif
 
 #include <wasm_sjlj.h>
@@ -475,13 +477,27 @@ int ch_parse(const char * query, uint32_t size)
 
 #if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
         /// The tree built before the failure. Not for a throw, which did not return through the
-        /// parser: what was captured before it is not the failure the message names.
-        if (parsed == 0 && diagnostics.expected.partial_ast)
+        /// parser: what was captured before it is not the failure the message names. Nor for an
+        /// `INSERT`, `CREATE` or `ALTER` captured where the parser recovered and went on, if the
+        /// parse then got further. A `SELECT` is reported as it was captured either way: an
+        /// `INSERT ... SELECT 1 +` that recovers past it still failed in it.
+        const DB::ASTPtr & captured = diagnostics.expected.partial_ast;
+        if (parsed == 0 && captured
+            && (captured->as<DB::ASTSelectQuery>() || diagnostics.expected.partial_ast_pos == diagnostics.expected.max_parsed_pos))
         {
             const DB::ASTPtr & partial_ast = diagnostics.expected.partial_ast;
-            for (const auto & child : partial_ast->children)
-                if (auto * error_node = child->as<DB::ASTError>())
+
+            /// The `Error` is a child of the root, or the last element of a list that it ends.
+            std::vector<DB::IAST *> nodes{partial_ast.get()};
+            while (!nodes.empty())
+            {
+                DB::IAST * current = nodes.back();
+                nodes.pop_back();
+                if (auto * error_node = current->as<DB::ASTError>())
                     error_node->setOffsets(query);
+                for (const auto & child : current->children)
+                    nodes.push_back(child.get());
+            }
 
             out << "\"partial_ast\":";
 

@@ -2,6 +2,9 @@
 
 #include <ASTError.h>
 
+#include <Parsers/ASTCreateQuery.h>
+#include <Parsers/ASTExpressionList.h>
+#include <Parsers/ASTInsertQuery.h>
 #include <Parsers/ASTSelectQuery.h>
 #include <Common/Exception.h>
 
@@ -56,6 +59,13 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
     if (expected.partial_ast_pos && expected.max_parsed_pos < expected.partial_ast_pos)
         return;
 
+    /// At the same position, an `INSERT`, `CREATE` or `ALTER` keeps what was captured before it: a
+    /// `SELECT` nested in it, which has the detail, or its own column list, which `INSERT` retries as
+    /// a subquery. A `SELECT` around a failed subquery still replaces it, as before.
+    const bool is_select = node->as<ASTSelectQuery>() != nullptr;
+    if (!is_select && expected.partial_ast && expected.max_parsed_pos == expected.partial_ast_pos)
+        return;
+
     auto error = make_intrusive<ASTError>();
     error->begin_pos = expected.max_parsed_pos;
 
@@ -70,10 +80,35 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
         error->expected.emplace_back(variant);
 
     ASTPtr partial = node->clone();
-    if (auto * select = partial->as<ASTSelectQuery>())
-        select->setExpression(selectClauseSlot(expected_what), ASTPtr(error));
+    const std::string_view what = expected_what;
+    auto * insert = partial->as<ASTInsertQuery>();
+    auto * create = partial->as<ASTCreateQuery>();
+    if (is_select)
+    {
+        partial->as<ASTSelectQuery &>().setExpression(selectClauseSlot(what), ASTPtr(error));
+    }
+    else if (insert && what == "columns" && insert->columns && insert->columns->as<ASTExpressionList>())
+    {
+        /// The list parsed and its `)` is missing: what failed is the element after the last one.
+        insert->columns->children.push_back(error);
+    }
+    else if (create && what == "columns_list" && create->columns_list)
+    {
+        /// Likewise for `CREATE TABLE t (a UInt8,`. A list that has no columns, only indices or
+        /// constraints, is left without a capture rather than given a `columns` it never had.
+        if (!create->columns_list->columns)
+            return;
+        create->columns_list->columns->children.push_back(error);
+    }
     else
-        partial->children.push_back(error);
+    {
+        auto wrapper = make_intrusive<ASTPartialStatement>();
+        wrapper->statement = std::move(partial);
+        wrapper->error = error;
+        wrapper->key = expected_what;
+        wrapper->children = {wrapper->statement, wrapper->error};
+        partial = std::move(wrapper);
+    }
 
     expected.partial_ast = std::move(partial);
     expected.partial_ast_pos = expected.max_parsed_pos;

@@ -338,6 +338,149 @@ if (hasAstJson) {
     }
 }
 
+{
+    /// `INSERT`, `CREATE TABLE` and `ALTER` report the same way. Their `Error` is the value of the JSON
+    /// key of the slot that failed, or the last element of a column list whose `)` is missing. A
+    /// `SELECT` that failed inside one is reported as it is today, on its own.
+    const errorsIn = (node, path = '', found = []) => {
+        if (Array.isArray(node))
+            node.forEach((value, i) => errorsIn(value, `${path}[${i}]`, found));
+        else if (node && typeof node === 'object') {
+            if (node.type === 'Error')
+                found.push({ path, node });
+            else
+                for (const [key, value] of Object.entries(node))
+                    errorsIn(value, path ? `${path}.${key}` : key, found);
+        }
+        return found;
+    };
+    /// `JSON.parse` keeps the last of two equal keys; a document with one is wrong all the same.
+    const hasDuplicateKeys = text => {
+        const stack = [];
+        for (let i = 0; i < text.length; ++i) {
+            const c = text[i];
+            if (c === '"') {
+                let j = i + 1;
+                while (text[j] !== '"')
+                    j += text[j] === '\\' ? 2 : 1;
+                const top = stack[stack.length - 1];
+                if (top?.keys && top.expectKey) {
+                    const key = text.slice(i + 1, j);
+                    if (top.keys.has(key))
+                        return true;
+                    top.keys.add(key);
+                    top.expectKey = false;
+                }
+                i = j;
+            }
+            else if (c === '{')
+                stack.push({ keys: new Set(), expectKey: true });
+            else if (c === '[')
+                stack.push({});
+            else if (c === '}' || c === ']')
+                stack.pop();
+            else if (c === ',' && stack[stack.length - 1]?.keys)
+                stack[stack.length - 1].expectKey = true;
+        }
+        return false;
+    };
+
+    const T = 'CREATE TABLE t (a UInt8)';
+    /// The query, then the root type, the path of the `Error` and its range - or null for no partial_ast.
+    const statements = [
+        ['INSERT INTO t (a,', 'InsertQuery', 'columns.children[1]', 17, 17],
+        ['INSERT INTO t (', 'InsertQuery', 'columns', 15, 15],
+        ['INSERT INTO t FORMAT', 'InsertQuery', 'format', 20, 20],
+        ['INSERT INTO t (a) SELECT 1 FORMAT', 'InsertQuery', 'format', 33, 33],
+        ['EXPLAIN AST INSERT INTO t (a) FORMAT', 'InsertQuery', 'format', 36, 36],
+        ['WITH x AS (SELECT 1) INSERT INTO t FORMAT', 'InsertQuery', 'format', 41, 41],
+        ['INSERT INTO', 'InsertQuery', 'table', 11, 11],
+        ['INSERT INTO db.', 'InsertQuery', 'table', 15, 15],
+        ['INSERT INTO FUNCTION', 'InsertQuery', 'table_function', 20, 20],
+        ["INSERT INTO FUNCTION file('x') PARTITION BY", 'InsertQuery', 'partition_by', 43, 43],
+        ['INSERT INTO t FROM INFILE', 'InsertQuery', 'infile', 25, 25],
+        ["INSERT INTO t FROM INFILE 'f' COMPRESSION", 'InsertQuery', 'compression', 41, 41],
+        ['INSERT INTO t SETTINGS', 'InsertQuery', 'settings_ast', 22, 22],
+        ['INSERT INTO t SELECT a FROM', 'SelectQuery', 'tables', 27, 27],
+        ['INSERT INTO t SELECT 1 UNION ALL SELECT a FROM', 'SelectQuery', 'tables', 46, 46],
+        /// Captured at the column list, which the parser then got past.
+        ['INSERT INTO t (SELECT 1 FROM x) VALUES', null],
+        ['INSERT INTO t', null],
+        ['INSERT INTO t (a) VALUE', null],
+
+        ['CREATE TABLE', 'CreateQuery', 'table_ast', 12, 12],
+        ['CREATE TABLE t ON CLUSTER', 'CreateQuery', 'cluster', 25, 25],
+        ['CREATE TABLE t (', 'CreateQuery', 'columns_list', 16, 16],
+        ['CREATE TABLE t (a UInt8,', 'CreateQuery', 'columns_list.columns.children[1]', 24, 24],
+        ["CREATE TABLE t (a String DEFAULT 'abc", 'CreateQuery', 'columns_list', 33, 37],
+        /// A list of indices only: there is no list of columns to put the `Error` in.
+        ['CREATE TABLE t (INDEX i a TYPE minmax,', null],
+        [`${T} ENGINE = MergeTree AS`, 'CreateQuery', 'select', 46, 46],
+        [`${T} EMPTY AS`, 'CreateQuery', 'as_table_function', 33, 33],
+        [`${T} CLONE AS`, 'CreateQuery', 'as_table_function', 33, 33],
+        ['CREATE TABLE t AS SELECT a FROM', 'SelectQuery', 'tables', 31, 31],
+        [`${T} ENGINE = MergeTree AS SELECT a FROM`, 'SelectQuery', 'tables', 60, 60],
+        ['CREATE TABLE t (a UInt8 DEFAULT (SELECT 1 FROM', 'SelectQuery', 'tables', 46, 46],
+        /// Storage is optional: it is the slot only when the storage parser itself got further.
+        [`${T} ENGINE =`, 'CreateQuery', 'storage', 33, 33],
+        [`${T} ENGINE`, 'CreateQuery', 'storage', 31, 31],
+        [`${T} ORDER BY`, 'CreateQuery', 'storage', 33, 33],
+        /// Both readings hold: the query-level `SETTINGS` fails on the same token.
+        [`${T} SETTINGS`, 'CreateQuery', 'storage', 33, 33],
+        [`${T} ENGINE = MergeTree() PARTITION BY`, 'CreateQuery', 'storage', 58, 58],
+        [`${T} ENGINE = MergeTree ORDER BY a TTL`, 'CreateQuery', 'storage', 58, 58],
+        [`${T} ENGINE = MergeTree ORDER BY a SAMPLE BY`, 'CreateQuery', 'storage', 64, 64],
+        [`${T} ENGINE = MergeTree ORDER BY a UNIQUE KEY`, 'CreateQuery', 'storage', 65, 65],
+        [`${T} ENGINE = MergeTree() ORDER BY tuple() SETTINGS index_granularity =`, 'CreateQuery', 'storage', 91, 91],
+        [`${T} ENGINE = MergeTree ORDER BY (a`, 'CreateQuery', 'storage', 55, 55],
+        ['CREATE TABLE t ENGINE =', 'CreateQuery', 'storage', 23, 23],
+        ['CREATE TABLE t AS other ENGINE =', 'CreateQuery', 'storage', 32, 32],
+        ['CREATE TEMPORARY TABLE t (a UInt8) ENGINE =', 'CreateQuery', 'storage', 43, 43],
+        [`${T} BLAH`, null],
+        [`${T} COMMENT`, null],
+        [`${T} COMMENT 'x' ENGINE =`, null],
+        [`${T} ENGINE = MergeTree ORDER BY a,`, null],
+        [`${T} ENGINE = MergeTree ORDER BY a >`, null],
+        ['CREATE TABLE t AS x.y.z', null],
+        ['CREATE TABLE t AS db.', null],
+        ['CREATE TABLE t AS remote(', null],
+        ['CREATE TABLE t ENGINE = MergeTree AS', null],
+
+        ['ALTER TABLE', 'AlterQuery', 'table_ast', 11, 11],
+        ['ALTER TABLE db.', 'AlterQuery', 'table_ast', 15, 15],
+        ['ALTER TABLE t', 'AlterQuery', 'command_list', 13, 13],
+        ['ALTER TABLE t ADD COLUMN', 'AlterQuery', 'command_list', 24, 24],
+        ['ALTER TABLE t ON CLUSTER', 'AlterQuery', 'cluster', 24, 24],
+        ['ALTER DATABASE', 'AlterQuery', 'database_ast', 14, 14],
+        ['ALTER DATABASE d ON CLUSTER', 'AlterQuery', 'cluster', 27, 27],
+        ['ALTER TABLE t MODIFY QUERY SELECT a FROM', 'SelectQuery', 'tables', 40, 40],
+        ['ALTER TABLE t DELETE WHERE x IN (SELECT a FROM', 'SelectQuery', 'tables', 46, 46],
+    ];
+    for (const [sql, type, path, begin, end] of statements) {
+        const raw = call(sql, ch_parse);
+        const r = { ok: raw.ok, doc: JSON.parse(raw.out) };
+        const partial = r.doc.partial_ast;
+        const same = !r.ok && r.doc.ast === undefined && r.doc.error?.message === format(sql, 1).out;
+        if (!hasAstJson || type === null) {
+            check(`${sql}: fails with no partial_ast`, same && partial === undefined);
+            continue;
+        }
+        const errors = errorsIn(partial);
+        check(`${sql}: fails with a partial ${type}, an Error in "${path}" at [${begin}, ${end})`, same
+            && partial?.type === type && errors.length === 1 && errors[0].path === path
+            && errors[0].node.begin === begin && errors[0].node.end === end && !hasDuplicateKeys(raw.out));
+    }
+
+    if (hasAstJson) {
+        /// What parsed before the failure is there as in "ast", spelled as `ch_parse` spells it on success.
+        const partial = parsed('CREATE TABLE t AS other ENGINE =').doc?.partial_ast;
+        check('...with the parts that parsed', partial?.table === 't' && partial?.as_table === 'other');
+        const insert = parsed('INSERT INTO t (a, b,').doc?.partial_ast;
+        check('...and the columns that parsed before the Error',
+            insert?.columns?.children?.map(c => c.name ?? c.type).join() === 'a,b,Error');
+    }
+}
+
 /// --- The engine's stack -----------------------------------------------------------------------
 ///
 /// WebAssembly frames also take the engine's own stack, which `checkStackSize` cannot see, and

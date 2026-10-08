@@ -108,18 +108,42 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
 
 * It appears only together with `error`, so never together with `ast`: a query that parses has
   no `partial_ast`. It is also absent when no statement keyword committed (`SELEC`), when the
-  error was reported by throwing, and in a `-DENABLE_FORMATTING=OFF` build. Statements capture
-  from `SELECT` (in its `FROM`-first form too): its select list, `FROM`, `PREWHERE`, `WHERE`,
-  `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` (with its `OFFSET` and `BY`) and `SETTINGS`.
+  error was reported by throwing, and in a `-DENABLE_FORMATTING=OFF` build. These statements
+  capture:
+  * `SELECT` (in its `FROM`-first form too): its select list, `FROM`, `PREWHERE`, `WHERE`,
+    `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` (with its `OFFSET` and `BY`) and `SETTINGS`;
+  * `INSERT`: the table or table function, `PARTITION BY`, the column list, `FROM INFILE`,
+    `COMPRESSION`, `SETTINGS` and `FORMAT`;
+  * `CREATE TABLE`: the table name, `ON CLUSTER`, the column list, the storage definition
+    (`ENGINE`, `ORDER BY` and the rest), `AS SELECT` and an `AS` table function;
+  * `ALTER`: the database or table name, `ON CLUSTER` and the list of commands.
 * Its root is the deepest statement node that captured: the one whose failure got furthest into
-  the query, and of statements nested in each other that failed at the same place, the outermost.
-  It is that statement itself, a `SelectQuery`, with no `SelectWithUnionQuery` around it. The
-  clauses that parsed before the failure are there as in `ast`.
+  the query. Of statements nested in each other that failed at the same place, a `SELECT` is
+  reported over an enclosing `SELECT`, and an `INSERT`, `CREATE` or `ALTER` only if nothing
+  inside it captured: `INSERT INTO t SELECT a FROM` reports the `SelectQuery`, with no
+  `SelectWithUnionQuery` or `InsertQuery` around it. The clauses that parsed before the failure
+  are there as in `ast`.
 * The slot that failed holds an `Error` node instead of a clause: `begin` and `end` are byte
   offsets of where the parser stopped, the rightmost position it recorded what it `expected`
   there - the same list as in `error`. A broken expression is one `Error` in its clause. That
   position can precede `error.begin`: for `SELECT 1 +`, the `Error` covers the `+`, while the
   error token is the end of the input.
+* For `INSERT`, `CREATE TABLE` and `ALTER`, the slot is the key the statement's `ast` would have
+  there, even where `ast` holds a string or a structure of its own: `INSERT INTO t FORMAT` reports
+  `"format": {"type": "Error", ...}`, `CREATE TABLE t (a UInt8) ENGINE =` reports `"storage"`. A
+  column list that parsed and lacks its `)` (`INSERT INTO t (a,`, `CREATE TABLE t (a UInt8,`) has
+  the `Error` as its last element.
+* The column list of `INSERT` and the storage definition of `CREATE TABLE` are optional, and the
+  parser goes on when they fail. They are reported only when nothing after them got further, and
+  the storage definition only when the storage parser itself got past its first token:
+  `CREATE TABLE t (a UInt8) BLAH` has no `partial_ast`.
+* Not captured: a missing data source (`INSERT INTO t`), `CREATE TABLE t AS db.table` and
+  `CREATE TABLE t ENGINE = MergeTree AS` (while `CREATE TABLE t (a UInt8) ENGINE = MergeTree AS`
+  reports `select`), a column list of indices only (`CREATE TABLE t (INDEX i a TYPE minmax,`),
+  views, dictionaries, and what parsed of a storage definition or of an `ALTER` command before it
+  failed - those are an `Error` in `storage` and `command_list` as a whole.
+  `CREATE TABLE t (a UInt8) SETTINGS` is reported in `storage`, although the query-level
+  `SETTINGS` fails on the same token.
 * `ch_format_json` rejects a `partial_ast` (`Unknown AST node type in JSON: 'Error'`): `Error` has
   no SQL form, and the document is not an `ast`. A tree that cannot be serialized is reported as
   `"partial_ast": null` with `partial_ast_error` saying why, the way `ast_error` does.

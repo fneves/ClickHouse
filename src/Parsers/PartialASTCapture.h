@@ -6,7 +6,10 @@
 /// none of its arguments, so the parser and its `Expected` stay exactly as they are.
 ///
 /// A call goes right before an existing `return false` of a statement parser, after the statement
-/// keyword has committed. It never assigns to `node` and never moves `pos`.
+/// keyword has committed, or where the parser recovers from a failed optional part and goes on
+/// (such a capture is reported only if the parse gets no further). It never assigns to `node` and
+/// never moves `pos`. For `SELECT` the last argument names the clause; for `INSERT`, `CREATE` and
+/// `ALTER` it is the JSON key of the slot that failed.
 
 #if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
 

@@ -836,17 +836,25 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
     bool is_clone_as = false;
 
 #if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    /// Declared further down, after the first capture site; they point there once declared.
+    const std::optional<bool> * attach_as_replicated_so_far = nullptr;
+    const ASTPtr * comment_so_far = nullptr;
+
     /// The parts stay in the locals above until the whole query has parsed, so the tree a failure
     /// captures is assembled from them, with the casts the success path makes; see
-    /// `Parsers/PartialASTCapture.h`.
+    /// `Parsers/PartialASTCapture.h`. Unlike the success path, it leaves a `PRIMARY KEY` declared in
+    /// the column list where it is, instead of moving it into the storage definition.
     auto tree_so_far = [&]() -> ASTPtr
     {
         auto partial = make_intrusive<ASTCreateQuery>();
         partial->attach = attach;
+        if (attach_as_replicated_so_far)
+            partial->attach_as_replicated = *attach_as_replicated_so_far;
         partial->replace_table = replace;
         partial->create_or_replace = or_replace;
         partial->if_not_exists = if_not_exists;
         partial->setIsTemporary(is_temporary);
+        partial->is_time_series_table = is_time_series_table;
         partial->is_create_empty = is_create_empty;
         partial->is_clone_as = is_clone_as;
         partial->cluster = cluster_str;
@@ -855,16 +863,30 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
             const auto & table_id = table->as<ASTTableIdentifier &>();
             partial->database = table_id.getDatabase();
             partial->table = table_id.getTable();
+            partial->uuid = table_id.uuid;
+            partial->has_uuid = table_id.uuid != UUIDHelpers::Nil;
+            partial->has_uuid_clause = table_id.has_uuid;
             if (partial->database)
                 partial->children.push_back(partial->database);
             if (partial->table)
                 partial->children.push_back(partial->table);
         }
+        partial->has_inner_uuid_clause = to_inner_uuid != nullptr;
         tryGetIdentifierNameInto(as_database, partial->as_database);
         tryGetIdentifierNameInto(as_table, partial->as_table);
         partial->set(partial->columns_list, columns_list);
         partial->set(partial->storage, storage);
         partial->set(partial->as_table_function, as_table_function);
+        if (comment_so_far && *comment_so_far)
+            partial->set(partial->comment, *comment_so_far);
+        if (sql_security)
+            partial->set(partial->sql_security, sql_security);
+        partial->set(partial->targets, targets);
+        if (from_path)
+        {
+            partial->attach_from_path = from_path->as<ASTLiteral &>().value.safeGet<String>();
+            partial->has_attach_from_path = true;
+        }
         return partial;
     };
 #endif
@@ -903,6 +925,9 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
     }
 
     std::optional<bool> attach_as_replicated = std::nullopt;
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    attach_as_replicated_so_far = &attach_as_replicated;
+#endif
     if (attach)
     {
         if (s_from.ignore(pos, expected))
@@ -1013,6 +1038,9 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
     };
 
     ASTPtr comment;
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    comment_so_far = &comment;
+#endif
 
     /// List of columns.
     if (s_lparen.ignore(pos, expected))

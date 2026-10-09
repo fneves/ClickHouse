@@ -121,7 +121,12 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   the query, and of statements nested in each other that failed at the same place, the innermost.
   `SELECT * FROM (SELECT a FROM` reports the subquery, `INSERT INTO t SELECT a FROM` the
   `SelectQuery`, with no `SelectWithUnionQuery`, enclosing `SelectQuery` or `InsertQuery` around
-  it. The clauses that parsed before the failure are there as in `ast`.
+  it.
+* The clauses that parsed before the failure are there as in `ast`, `DISTINCT ON (a)` as
+  `LIMIT 1 BY a`, with these exceptions. A `PRIMARY KEY` declared in the column list of a
+  `CREATE TABLE` stays in `columns_list`, where `ast` has it in `storage`. `TO INNER UUID` is only
+  `has_inner_uuid_clause`, without the `targets` that `ast` builds from it. The `SETTINGS` of the
+  `SELECT` in an `INSERT ... SELECT` are not copied into the `INSERT`'s own, as they are in `ast`.
 * The slot that failed holds an `Error` node instead of a clause: `begin` and `end` are byte
   offsets of where the parser stopped, the rightmost position it recorded what it `expected`
   there - the same list as in `error`. (A `SELECT` failed inside an `INSERT` or `CREATE` that went

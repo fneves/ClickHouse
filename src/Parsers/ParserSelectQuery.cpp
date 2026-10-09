@@ -421,6 +421,12 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         set(ASTSelectQuery::Expression::LIMIT_BY_OFFSET, limit_by_offset);
         set(ASTSelectQuery::Expression::LIMIT_BY_LENGTH, limit_by_length);
         set(ASTSelectQuery::Expression::LIMIT_BY, limit_by_expression_list);
+        /// The finished query has `DISTINCT ON (a)` as `LIMIT 1 BY a`; the two cannot both be there.
+        if (distinct_on_expression_list && !limit_by_expression_list)
+        {
+            set(ASTSelectQuery::Expression::LIMIT_BY_LENGTH, make_intrusive<ASTLiteral>(Field{static_cast<UInt8>(1)}));
+            set(ASTSelectQuery::Expression::LIMIT_BY, distinct_on_expression_list);
+        }
         set(ASTSelectQuery::Expression::LIMIT_OFFSET, limit_offset);
         set(ASTSelectQuery::Expression::LIMIT_LENGTH, limit_length ? limit_length : top_length);
         set(ASTSelectQuery::Expression::LIMIT_AFTER, limit_after);

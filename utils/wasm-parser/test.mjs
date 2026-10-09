@@ -486,6 +486,21 @@ if (hasAstJson) {
         const subquery = parsed('SELECT * FROM (SELECT a FROM').doc?.partial_ast;
         check('...and of a subquery, its own select list', subquery?.select?.children?.[0]?.name === 'a');
 
+        /// Members the success path sets at the end are there as in the "ast" of the whole statement.
+        for (const [prefix, rest, keys] of [
+            ["CREATE TABLE t UUID '123e4567-e89b-12d3-a456-426614174000' (a UInt8) ENGINE =", ' MergeTree ORDER BY a',
+                ['uuid', 'has_uuid', 'has_uuid_clause']],
+            ["CREATE TABLE t (a UInt8) ENGINE = MergeTree ORDER BY a COMMENT 'x' AS", ' SELECT 1', ['comment']],
+            ['SELECT DISTINCT ON (a) b FROM', ' t', ['limit_by', 'limit_by_length']],
+        ]) {
+            const partial = parsed(prefix).doc?.partial_ast;
+            let ast = parsed(prefix + rest).doc?.ast;
+            if (ast?.type === 'SelectWithUnionQuery')
+                ast = ast.list_of_selects.children[0];
+            check(`...with ${keys.join(', ')} as in the ast of the whole statement: ${prefix.slice(0, 40)}`,
+                keys.every(k => partial?.[k] !== undefined && JSON.stringify(partial[k]) === JSON.stringify(ast?.[k])));
+        }
+
         /// Past the limits of an "ast" there is no partial_ast, and the error is the one without it.
         const wide = `SELECT ${Array(60000).fill('a').join(',')} FROM`;
         const wideParsed = parsed(wide);

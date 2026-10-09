@@ -40,6 +40,8 @@ bool isPartialStatementKey(const IAST & statement, std::string_view key)
             "refresh_strategy", "targets", "sql_security", "comment", "dictionary_attributes_list", "dictionary"});
     if (statement.as<ASTAlterQuery>())
         return is_one_of({"database_ast", "table_ast", "cluster", "command_list"});
+    if (statement.as<ASTStorage>())
+        return is_one_of({"engine", "partition_by", "primary_key", "order_by", "unique_key", "sample_by", "ttl_table", "settings"});
     if (statement.as<ASTDictionary>())
         return is_one_of({"primary_key", "source", "lifetime", "layout", "range", "dict_settings"});
     if (statement.as<ASTRefreshStrategy>())

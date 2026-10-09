@@ -5,11 +5,13 @@
 #include <Parsers/ASTCreateQuery.h>
 #include <Parsers/ASTDictionary.h>
 #include <Parsers/ASTExpressionList.h>
+#include <Parsers/ASTFunction.h>
 #include <Parsers/ASTInsertQuery.h>
 #include <Parsers/ASTRefreshStrategy.h>
 #include <Parsers/ASTSelectQuery.h>
 #include <Parsers/ASTViewTargets.h>
 
+#include <algorithm>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -122,7 +124,8 @@ bool fillsSlot(const IAST & parent, const char * key, const IAST & fragment)
     const IAST & node = fragmentNode(fragment);
     const std::string_view slot = key ? key : "";
     if (parent.as<ASTCreateQuery>())
-        return (slot == "refresh_strategy" && node.as<ASTRefreshStrategy>()) || (slot == "dictionary" && node.as<ASTDictionary>());
+        return (slot == "refresh_strategy" && node.as<ASTRefreshStrategy>()) || (slot == "dictionary" && node.as<ASTDictionary>())
+            || ((slot == "storage" || slot == "inner_engine") && node.as<ASTStorage>());
     return false;
 }
 
@@ -131,20 +134,48 @@ bool fillsSlot(const IAST & parent, const char * key, const IAST & fragment)
 /// expression, and the key is written once.
 void resetSlot(IAST & node, std::string_view key)
 {
-    if (auto * dictionary = node.as<ASTDictionary>())
+    auto clear = [&]<typename T>(T *& field)
+    {
+        const IAST * slot = field;
+        node.children.erase(
+            std::remove_if(node.children.begin(), node.children.end(), [&](const ASTPtr & child) { return child.get() == slot; }),
+            node.children.end());
+        field = nullptr;
+    };
+
+    if (auto * storage = node.as<ASTStorage>())
+    {
+        if (key == "engine")
+            clear(storage->engine);
+        else if (key == "partition_by")
+            clear(storage->partition_by);
+        else if (key == "primary_key")
+            clear(storage->primary_key);
+        else if (key == "order_by")
+            clear(storage->order_by);
+        else if (key == "unique_key")
+            clear(storage->unique_key);
+        else if (key == "sample_by")
+            clear(storage->sample_by);
+        else if (key == "ttl_table")
+            clear(storage->ttl_table);
+        else if (key == "settings")
+            clear(storage->settings);
+    }
+    else if (auto * dictionary = node.as<ASTDictionary>())
     {
         if (key == "primary_key")
-            dictionary->reset(dictionary->primary_key);
+            clear(dictionary->primary_key);
         else if (key == "source")
-            dictionary->reset(dictionary->source);
+            clear(dictionary->source);
         else if (key == "lifetime")
-            dictionary->reset(dictionary->lifetime);
+            clear(dictionary->lifetime);
         else if (key == "layout")
-            dictionary->reset(dictionary->layout);
+            clear(dictionary->layout);
         else if (key == "range")
-            dictionary->reset(dictionary->range);
+            clear(dictionary->range);
         else if (key == "dict_settings")
-            dictionary->reset(dictionary->dict_settings);
+            clear(dictionary->dict_settings);
     }
 }
 

@@ -118,8 +118,9 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
     and `SETTINGS`;
   * `INSERT`: the table or table function, `PARTITION BY`, the column list, `FROM INFILE`,
     `COMPRESSION`, `SETTINGS` and `FORMAT`;
-  * `CREATE TABLE`: the table name, `ON CLUSTER`, the column list, the storage definition
-    (`ENGINE`, `ORDER BY` and the rest), `AS SELECT` and an `AS` table function;
+  * `CREATE TABLE`: the table name, `ON CLUSTER`, the column list, the storage definition (each
+    clause in its own key of `storage`: `engine`, `partition_by`, `primary_key`, `order_by`,
+    `unique_key`, `sample_by`, `ttl_table`, `settings`), `AS SELECT` and an `AS` table function;
   * `CREATE VIEW` and `CREATE MATERIALIZED VIEW`: the name, `ON CLUSTER`, `REFRESH` (in
     `refresh_strategy`, each of its parts in its own key: `period`, `offset`, `spread`,
     `dependencies`, `settings`), `TO` and `TO INNER UUID` (in `targets`), the column list and the
@@ -155,7 +156,8 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   after its second branch, so `error` expects `end of query` and the `Error` an operator.
 * For `INSERT`, `CREATE` and `ALTER`, the slot is the key the statement's `ast` would have
   there, even where `ast` holds a string or a structure of its own: `INSERT INTO t FORMAT` reports
-  `"format": {"type": "Error", ...}`, `CREATE TABLE t (a UInt8) ENGINE =` reports `"storage"`. A
+  `"format": {"type": "Error", ...}`, `CREATE TABLE t (a UInt8) ENGINE =` reports `"storage": {"type":
+  "Storage", "engine": {"type": "Error", ...}}`. A
   column list that parsed and lacks its `)` has the `Error` as its last element:
   `INSERT INTO t (a,`, `CREATE VIEW v (a,` (the column aliases), `CREATE DICTIONARY d (a UInt8,`,
   and `CREATE TABLE t (a UInt8,` when the list has columns only. A list
@@ -170,10 +172,9 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   first token: `CREATE TABLE t (a UInt8) BLAH` has no `partial_ast`.
 * Not captured: a missing data source (`INSERT INTO t`), `CREATE TABLE t AS db.table` and
   `CREATE TABLE t ENGINE = MergeTree AS` (while `CREATE TABLE t (a UInt8) ENGINE = MergeTree AS`
-  reports `select`), and what parsed of a storage definition or of an
-  `ALTER` command before it failed - those are an `Error` in `storage` and `command_list` as a
-  whole.
-  `CREATE TABLE t (a UInt8) SETTINGS` is reported in `storage`, although the query-level
+  reports `select`), and what parsed of an `ALTER` command before it failed - that is an `Error`
+  in `command_list` as a whole.
+  `CREATE TABLE t (a UInt8) SETTINGS` is reported in `storage.settings`, although the query-level
   `SETTINGS` fails on the same token.
 * A partial tree is held to the node limits of an `ast`, 1000 levels and 50000 nodes. One past
   them is not reported at all, and neither is a statement around it that failed at the same

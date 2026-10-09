@@ -658,6 +658,31 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     ASTPtr unique_key;
     ASTPtr settings;
 
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    /// The clauses stay in the locals above until the whole definition has parsed, so the fragment a
+    /// failure captures is assembled from them, the way the success path assembles it; see
+    /// `Parsers/PartialASTCapture.h`.
+    auto storage_so_far = [&]() -> ASTPtr
+    {
+        auto partial = make_intrusive<ASTStorage>();
+        if (engine)
+        {
+            auto engine_kind_set = engine->clone();
+            engine_kind_set->as<ASTFunction &>().setKind(
+                engine_kind == EngineKind::TABLE_ENGINE ? ASTFunction::Kind::TABLE_ENGINE : ASTFunction::Kind::DATABASE_ENGINE);
+            partial->set(partial->engine, engine_kind_set);
+        }
+        partial->set(partial->partition_by, partition_by);
+        partial->set(partial->primary_key, primary_key);
+        partial->set(partial->order_by, order_by);
+        partial->set(partial->unique_key, unique_key);
+        partial->set(partial->sample_by, sample_by);
+        partial->set(partial->ttl_table, ttl_table);
+        partial->set(partial->settings, settings);
+        return partial;
+    };
+#endif
+
     bool storage_like = false;
     bool parsed_engine_keyword = s_engine.ignore(pos, expected);
 
@@ -666,7 +691,10 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         s_eq.ignore(pos, expected);
 
         if (!ident_with_optional_params_p.parse(pos, engine, expected))
+        {
+            PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "engine");
             return false;
+        }
         storage_like = true;
     }
 
@@ -679,6 +707,7 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 storage_like = true;
                 continue;
             }
+            PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "partition_by");
             return false;
         }
 
@@ -689,6 +718,7 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 storage_like = true;
                 continue;
             }
+            PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "primary_key");
             return false;
         }
 
@@ -699,6 +729,7 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 storage_like = true;
                 continue;
             }
+            PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "order_by");
             return false;
         }
 
@@ -709,6 +740,7 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 storage_like = true;
                 continue;
             }
+            PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "unique_key");
             return false;
         }
 
@@ -719,6 +751,7 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 storage_like = true;
                 continue;
             }
+            PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "sample_by");
             return false;
         }
 
@@ -729,6 +762,7 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 storage_like = true;
                 continue;
             }
+            PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "ttl_table");
             return false;
         }
 
@@ -739,7 +773,10 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         if (s_settings.ignore(pos, expected))
         {
             if (!settings_p.parse(pos, settings, expected))
+            {
+                PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "settings");
                 return false;
+            }
             storage_like = true;
         }
 

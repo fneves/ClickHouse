@@ -112,8 +112,10 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   capture:
   * `SELECT` (in its `FROM`-first form too): its select list, `FROM` (with the column alias list
     that can follow the tables, `FROM t FINAL (a, b)`), `PREWHERE`, `WHERE`,
-    `GROUP BY`, `HAVING`, `WINDOW`, `QUALIFY`, `ORDER BY`, `LIMIT` (with its `OFFSET` and `BY`),
-    `OFFSET` on its own, `FETCH` (in `limit_length`, which it is in `ast`) and `SETTINGS`;
+    `GROUP BY` (with the `WITH ROLLUP`, `WITH CUBE` and `WITH TOTALS` after it, in `group_by` even
+    when there is no `GROUP BY`), `HAVING`, `WINDOW`, `QUALIFY`, `ORDER BY`, `LIMIT` (with its
+    `OFFSET` and `BY`), `OFFSET` on its own, `FETCH` (in `limit_length`, which it is in `ast`)
+    and `SETTINGS`;
   * `INSERT`: the table or table function, `PARTITION BY`, the column list, `FROM INFILE`,
     `COMPRESSION`, `SETTINGS` and `FORMAT`;
   * `CREATE TABLE`: the table name, `ON CLUSTER`, the column list, the storage definition

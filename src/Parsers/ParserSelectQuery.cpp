@@ -729,23 +729,35 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         if (s_rollup.ignore(pos, expected))
         {
             if (select_query->group_by_with_rollup)
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
                 return false;
+            }
             select_query->group_by_with_rollup = true;
         }
         else if (s_cube.ignore(pos, expected))
         {
             if (select_query->group_by_with_cube)
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
                 return false;
+            }
             select_query->group_by_with_cube = true;
         }
         else if (s_totals.ignore(pos, expected))
         {
             if (select_query->group_by_with_totals)
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
                 return false;
+            }
             select_query->group_by_with_totals = true;
         }
         else
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
             return false;
+        }
     }
 
     /// HAVING expr

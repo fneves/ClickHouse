@@ -407,6 +407,12 @@ if (hasAstJson) {
         ['SELECT * FROM t FINAL (', 'SelectQuery', 'aliases', 23, 23],
         ['SELECT * FROM t SAMPLE 1 (a', 'SelectQuery', 'aliases', 27, 27],
         ['FROM t FINAL (a', 'SelectQuery', 'aliases', 15, 15],
+        /// The modifiers after `GROUP BY` are a failure of `group_by`, also where there is none.
+        ['SELECT 1 GROUP BY x WITH', 'SelectQuery', 'group_by', 24, 24],
+        ['SELECT 1 GROUP BY x WITH ROLLUP WITH', 'SelectQuery', 'group_by', 36, 36],
+        /// A repeated modifier: the `Error` is at it, where the parser last recorded what it expected.
+        ['SELECT 1 GROUP BY x WITH TOTALS WITH TOTALS', 'SelectQuery', 'group_by', 37, 37],
+        ['SELECT count() FROM t WITH', 'SelectQuery', 'group_by', 26, 26],
         ['SELECT 1 WINDOW', 'SelectQuery', 'window', 15, 15],
         ['SELECT 1 FROM t WINDOW w AS (PARTITION BY', 'SelectQuery', 'window', 41, 41],
         ['SELECT 1 QUALIFY', 'SelectQuery', 'qualify', 16, 16],

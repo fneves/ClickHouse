@@ -27,6 +27,57 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
 /// The same for a `SELECT`, with the `Error` in the clause `slot` of the `ASTSelectQuery` `node`.
 void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos pos, ASTSelectQuery::Expression slot);
 
+/// Held by `ParserSelectQuery::parseImpl`: counts the `SELECT`s being parsed.
+class PartialASTSelectScope
+{
+public:
+    explicit PartialASTSelectScope(Expected & expected_)
+        : expected(expected_)
+    {
+        ++expected.partial_ast_selects;
+    }
+
+    ~PartialASTSelectScope()
+    {
+        --expected.partial_ast_selects;
+    }
+
+    PartialASTSelectScope(const PartialASTSelectScope &) = delete;
+    PartialASTSelectScope & operator=(const PartialASTSelectScope &) = delete;
+
+private:
+    Expected & expected;
+};
+
+/// Held by `ParserInsertQuery` while it parses its `SELECT`: a capture of a `SELECT` of its union gets
+/// the `WITH` written before `INSERT`, which `ast` puts there; one nested in another `SELECT` does not.
+class PartialASTOuterWith
+{
+public:
+    PartialASTOuterWith(Expected & expected_, const ASTPtr & with)
+        : expected(expected_)
+        , previous_with(expected.partial_ast_outer_with)
+        , previous_selects(expected.partial_ast_outer_with_selects)
+    {
+        expected.partial_ast_outer_with = with;
+        expected.partial_ast_outer_with_selects = expected.partial_ast_selects;
+    }
+
+    ~PartialASTOuterWith()
+    {
+        expected.partial_ast_outer_with = std::move(previous_with);
+        expected.partial_ast_outer_with_selects = previous_selects;
+    }
+
+    PartialASTOuterWith(const PartialASTOuterWith &) = delete;
+    PartialASTOuterWith & operator=(const PartialASTOuterWith &) = delete;
+
+private:
+    Expected & expected;
+    ASTPtr previous_with;
+    size_t previous_selects;
+};
+
 }
 
 #define PARTIAL_AST_SNAPSHOT(expected, node, pos, what) snapshotPartialAST(expected, node, pos, what)

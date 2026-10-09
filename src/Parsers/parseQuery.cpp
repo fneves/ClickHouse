@@ -454,6 +454,9 @@ ASTPtr tryParseQuery(
 #if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
         diagnostics->expected.partial_ast = nullptr;
         diagnostics->expected.partial_ast_pos = nullptr;
+        diagnostics->expected.partial_ast_selects = 0;
+        diagnostics->expected.partial_ast_outer_with = nullptr;
+        diagnostics->expected.partial_ast_outer_with_selects = 0;
 #endif
     }
 

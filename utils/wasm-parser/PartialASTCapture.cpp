@@ -425,7 +425,16 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
     }
 
     if (create)
+    {
         movePrimaryKeyToStorage(*create, *inner, what);
+
+        /// The success path marks a `TimeSeries` table as soon as its storage parses; a storage that
+        /// failed after its engine is that table as well.
+        if (const auto * wrapper = inner->as<ASTPartialStatement>(); wrapper && what == "storage")
+            if (const auto * storage = wrapper->statement->as<ASTStorage>(); storage && storage->engine
+                && storage->engine->name == "TimeSeries")
+                create->is_time_series_table = true;
+    }
 
     if (placed)
     {

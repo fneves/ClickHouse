@@ -637,6 +637,8 @@ if (hasAstJson) {
             ["CREATE TABLE t TO INNER UUID '123e4567-e89b-12d3-a456-426614174000' (a UInt8,", ' b UInt8) ENGINE = SharedSet',
                 ['targets', 'has_inner_uuid_clause']],
             ['CREATE TABLE t AS db.', 'other', ['as_database']],
+            /// A `TimeSeries` table is one from its engine on, also when its storage definition failed.
+            [`${T} ENGINE = TimeSeries ORDER BY`, ' a', ['is_time_series_table', 'storage.engine']],
         ]) {
             const partial = parsed(prefix).doc?.partial_ast;
             let ast = parsed(prefix + rest).doc?.ast;

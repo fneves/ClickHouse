@@ -111,7 +111,8 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   error was reported by throwing, and in a `-DENABLE_FORMATTING=OFF` build. These statements
   capture:
   * `SELECT` (in its `FROM`-first form too): its select list, `FROM`, `PREWHERE`, `WHERE`,
-    `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` (with its `OFFSET` and `BY`) and `SETTINGS`;
+    `GROUP BY`, `HAVING`, `WINDOW`, `QUALIFY`, `ORDER BY`, `LIMIT` (with its `OFFSET` and `BY`),
+    `OFFSET` on its own, `FETCH` (in `limit_length`, which it is in `ast`) and `SETTINGS`;
   * `INSERT`: the table or table function, `PARTITION BY`, the column list, `FROM INFILE`,
     `COMPRESSION`, `SETTINGS` and `FORMAT`;
   * `CREATE TABLE`: the table name, `ON CLUSTER`, the column list, the storage definition

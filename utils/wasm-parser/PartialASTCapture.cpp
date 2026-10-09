@@ -52,13 +52,14 @@ bool startCapture(Expected & expected, const ASTPtr & node, bool is_select)
     /// At the same position, the statement that captured first is the innermost one, and it is kept:
     /// for `SELECT * FROM (SELECT a FROM`, the subquery, not the query around it. The one exception
     /// is a `SELECT` over a capture of another statement at that position - the column list of an
-    /// `INSERT`, which then retries the `(` as a subquery.
-    if (expected.partial_ast && expected.max_parsed_pos == expected.partial_ast_pos
-        && (!is_select || expected.partial_ast->as<ASTSelectQuery>()))
+    /// `INSERT`, which then retries the `(` as a subquery. A position with `partial_ast_pos` and no
+    /// `partial_ast` is one whose innermost statement was too big, and nothing around it is taken.
+    if (expected.partial_ast_pos && expected.max_parsed_pos == expected.partial_ast_pos
+        && (!expected.partial_ast || !is_select || expected.partial_ast->as<ASTSelectQuery>()))
         return false;
 
     /// A tree that could never be an `ast` is not reported either. Nothing captured before it is: that
-    /// was a shallower failure, and the parse got further.
+    /// was a shallower failure, and the parse got further. Nor anything around it at this position.
     if (!fitsPartialASTLimits(*node))
     {
         expected.partial_ast = nullptr;

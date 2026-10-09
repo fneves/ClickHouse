@@ -142,7 +142,9 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
     `remove_property`, `ALTER TABLE t ATTACH PARTITION 1 FROM` reports `from_table`,
     `ALTER TABLE t MODIFY REFRESH EVERY` reports `refresh.period`. A command that does not start
     with a command keyword is an `Error` after the ones before it (`ALTER TABLE t DROP COLUMN a,`),
-    or `command_list` as a whole when there are none (`ALTER TABLE t`).
+    or `command_list` as a whole when there are none (`ALTER TABLE t`). A field that only a later
+    keyword decides has its default value: `ALTER TABLE t MOVE PARTITION 1 TO` reports
+    `move_destination_type: "DISK"`, as the keyword after `TO` is what is missing.
 * Its root is the deepest statement node that captured: the one whose failure got furthest into
   the query, and of statements nested in each other that failed at the same place, the innermost.
   `SELECT * FROM (SELECT a FROM` reports the subquery, `INSERT INTO t SELECT a FROM` the

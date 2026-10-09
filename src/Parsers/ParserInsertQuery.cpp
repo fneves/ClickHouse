@@ -100,11 +100,21 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         partial->columns = columns;
         partial->select = select;
         partial->settings_ast = settings_ast;
+        if (select)
+        {
+            /// The `SETTINGS` of the `SELECT` go into those of the `INSERT`, as the success path copies
+            /// them, here into a copy.
+            if (partial->settings_ast)
+                partial->settings_ast = partial->settings_ast->clone();
+            ASTPtr select_to_visit = select;
+            InsertQuerySettingsPushDownVisitor::Data visitor_data{partial->settings_ast};
+            InsertQuerySettingsPushDownVisitor(visitor_data).visit(select_to_visit);
+        }
         partial->infile = infile;
         partial->compression = compression;
         tryGetIdentifierNameInto(format, partial->format);
         /// The capture measures the tree through `children` before it clones it.
-        for (const auto & child : {database, table, columns, table_function, partition_by_expr, settings_ast, select, infile, compression})
+        for (const auto & child : {database, table, columns, table_function, partition_by_expr, partial->settings_ast, select, infile, compression})
             if (child)
                 partial->children.push_back(child);
         return partial;
@@ -307,6 +317,7 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     else if (!infile)
     {
         /// If all previous conditions were false and it's not FROM INFILE, query is incorrect
+        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "select");
         return false;
     }
 
@@ -326,7 +337,10 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         /// Settings are written like SET query, so parse them with ParserSetQuery
         ParserSetQuery parser_settings(true);
         if (!parser_settings.parse(pos, settings_ast, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "settings_ast");
             return false;
+        }
         /// In case of INSERT INTO ... VALUES SETTINGS ... (...), (...), ...
         /// we should move data pointer after all settings.
         if (data != nullptr)

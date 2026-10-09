@@ -117,10 +117,15 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
     `OFFSET` and `BY`), `OFFSET` on its own, `FETCH` (in `limit_length`, which it is in `ast`)
     and `SETTINGS`;
   * `INSERT`: the table or table function, `PARTITION BY`, the column list, `FROM INFILE`,
-    `COMPRESSION`, `SETTINGS` and `FORMAT`;
-  * `CREATE TABLE`: the table name, `ON CLUSTER`, the column list, the storage definition (each
-    clause in its own key of `storage`: `engine`, `partition_by`, `primary_key`, `order_by`,
-    `unique_key`, `sample_by`, `ttl_table`, `settings`), `AS SELECT` and an `AS` table function;
+    `COMPRESSION`, `SETTINGS`, `FORMAT`, and a missing data source (`INSERT INTO t`), which is an
+    `Error` in `select`, the one source that `ast` has as a tree;
+  * `CREATE TABLE`: the table name, `TO INNER UUID` (in `targets`), the path of `ATTACH ... FROM`
+    (`attach_from_path`) and `ATTACH ... AS [NOT] REPLICATED` (`attach_as_replicated`),
+    `ON CLUSTER`, the column list, the storage definition (each clause in its own key of
+    `storage`: `engine`, `partition_by`, `primary_key`, `order_by`, `unique_key`, `sample_by`,
+    `ttl_table`, `settings`), `SQL SECURITY`, `COMMENT`, `AS SELECT`, an `AS` table function and
+    `AS [db.]table` (`as_table`; with nothing after `AS`, or after `EMPTY` or `CLONE`, the slot
+    is `select`);
   * `CREATE VIEW` and `CREATE MATERIALIZED VIEW`: the name, `ON CLUSTER`, `REFRESH` (in
     `refresh_strategy`, each of its parts in its own key: `period`, `offset`, `spread`,
     `dependencies`, `settings`), `TO` and `TO INNER UUID` (in `targets`), the column list and the
@@ -144,10 +149,11 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   `SelectQuery`, with no `SelectWithUnionQuery`, enclosing `SelectQuery` or `InsertQuery` around
   it.
 * The clauses that parsed before the failure are there as in `ast`, `DISTINCT ON (a)` as
-  `LIMIT 1 BY a`, with these exceptions. A `PRIMARY KEY` declared in the column list of a
-  `CREATE TABLE` stays in `columns_list`, where `ast` has it in `storage`. `TO INNER UUID` is only
-  `has_inner_uuid_clause`, without the `targets` that `ast` builds from it. The `SETTINGS` of the
-  `SELECT` in an `INSERT ... SELECT` are not copied into the `INSERT`'s own, as they are in `ast`.
+  `LIMIT 1 BY a`. A `PRIMARY KEY` declared in the column list of a `CREATE` is in the storage
+  definition (in a materialized view, the `inner_engine` of its `To` target), which is made for it
+  if there is none, also when the storage definition is the part that failed - unless it failed
+  in its own `PRIMARY KEY`, or is an `Error` as a whole. `TO INNER UUID` is in `targets`. The
+  `SETTINGS` of the `SELECT` of an `INSERT ... SELECT` are also in those of the `INSERT`.
   A `WITH` written before `INSERT` is in a `SELECT` reported from inside the `INSERT` as in
   `ast`: in each `SELECT` of the union of the `INSERT`, parenthesized or not, and not in a
   `SELECT` nested in one of them (`WITH c AS (SELECT 1) INSERT INTO t SELECT * FROM c WHERE`
@@ -167,21 +173,26 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   "Storage", "engine": {"type": "Error", ...}}`. A
   column list that parsed and lacks its `)` has the `Error` as its last element:
   `INSERT INTO t (a,`, `CREATE VIEW v (a,` (the column aliases), `CREATE DICTIONARY d (a UInt8,`,
-  and `CREATE TABLE t (a UInt8,` when the list has columns only. A list
-  with indices, constraints, projections or a primary key does not keep the order of its
-  elements, so for `CREATE TABLE t (a UInt8, INDEX i a TYPE minmax GRANULARITY 1` the `Error`
-  is `columns_list` as a whole.
+  and `CREATE TABLE t (a UInt8,`. The list of a `CREATE` keeps its columns, indices, constraints
+  and projections apart, and the `Error` goes after the element written last, in its list:
+  `CREATE TABLE t (a UInt8, INDEX i a TYPE minmax GRANULARITY 1` reports
+  `columns_list.indices.children[1]`. When that element is a `PRIMARY KEY`, which is in none of
+  them, or a foreign key, which is not kept, the `Error` is `columns_list` as a whole.
 * The column list of `INSERT`, the storage definition of `CREATE TABLE` and of a materialized
-  view, a view's `DEFINER` and `SQL SECURITY`, and the `COMMENT` of a view or a dictionary are
-  optional, and the parser goes on
-  when they fail. They are reported only when nothing after them got further, and the storage
-  definition, `DEFINER`, `SQL SECURITY` and `COMMENT` only when their parser itself got past its
-  first token: `CREATE TABLE t (a UInt8) BLAH` has no `partial_ast`.
-* Not captured: a missing data source (`INSERT INTO t`), `CREATE TABLE t AS db.table` and
-  `CREATE TABLE t ENGINE = MergeTree AS` (while `CREATE TABLE t (a UInt8) ENGINE = MergeTree AS`
-  reports `select`).
+  view, `DEFINER`, `SQL SECURITY` and `COMMENT` of a `CREATE`, and the table function of
+  `CREATE TABLE ... AS`, which the table name is tried after, are optional, and the parser goes on
+  when they fail. They are reported only when nothing after them got further, and all but the
+  column list only when their parser itself got past its first token (the table function: past
+  the table name): `CREATE TABLE t (a UInt8) BLAH` has no `partial_ast`, and neither has
+  `CREATE TABLE t AS remote(`, where the `(` is all that is left after `AS remote`.
   `CREATE TABLE t (a UInt8) SETTINGS` is reported in `storage.settings`, although the query-level
   `SETTINGS` fails on the same token.
+* Not captured, because there is no slot for what failed, or nothing failed in the statement: an
+  `ALTER` command in parentheses that lacks only its `)` (in `ALTER TABLE t (DROP COLUMN a`, the
+  `Error` takes the place of that command, here of `command_list` as it is the first), a `CREATE TABLE` that parsed in full and is rejected for
+  combining `SQL SECURITY` with `AS [db.]table` or a table function, and input after a statement
+  that parsed (`CREATE TABLE t (a UInt8) COMMENT 'x' ENGINE =`). A `WITH` at the start of a
+  statement does not commit it to `SELECT` or `INSERT`, so a failure in it is not captured either.
 * A partial tree is held to the node limits of an `ast`, 1000 levels and 50000 nodes. One past
   them is not reported at all, and neither is a statement around it that failed at the same
   place - `SELECT 1 + 1 + ... FROM` with a few thousand terms has no `partial_ast`, and neither

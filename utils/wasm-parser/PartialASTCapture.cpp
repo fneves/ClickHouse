@@ -13,6 +13,7 @@
 #include <Parsers/ASTViewTargets.h>
 
 #include <algorithm>
+#include <optional>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -204,6 +205,26 @@ void resetSlot(IAST & node, std::string_view key)
             command->add_enum_values = nullptr;
         }
     }
+    else if (auto * insert = node.as<ASTInsertQuery>())
+    {
+        if (key == "settings_ast" && insert->settings_ast)
+        {
+            IAST * settings = insert->settings_ast.get();
+            clear(settings);
+            insert->settings_ast = nullptr;
+        }
+    }
+    else if (auto * create = node.as<ASTCreateQuery>())
+    {
+        if (key == "attach_as_replicated")
+            create->attach_as_replicated.reset();
+        /// `AS remote(` parses `remote` as a table name after the table function failed.
+        if (key == "as_table_function")
+        {
+            create->as_database.clear();
+            create->as_table.clear();
+        }
+    }
     else if (auto * dictionary = node.as<ASTDictionary>())
     {
         if (key == "primary_key")
@@ -250,6 +271,63 @@ bool hasOnlyColumns(const ASTColumns & list)
         && !list.primary_key_from_columns;
 }
 
+/// A `PRIMARY KEY` declared in the column list of a `CREATE` goes into the storage definition, where
+/// the success path puts it: in a materialized view, the inner engine of its `To` target. Not where
+/// the success path rejects the query instead (a plain view, `TO [db.]table`, a table function, two
+/// primary keys), nor where the storage definition is the `Error` itself or failed in its own
+/// `PRIMARY KEY`.
+void movePrimaryKeyToStorage(ASTCreateQuery & create, const IAST & inner, std::string_view key)
+{
+    if (!create.columns_list)
+        return;
+    auto & columns = *create.columns_list;
+    if (!columns.primary_key == !columns.primary_key_from_columns)
+        return;
+    if (create.is_ordinary_view || create.as_table_function)
+        return;
+
+    ASTStorage * storage = nullptr;
+    if (key == "storage" || key == "inner_engine")
+    {
+        const auto * wrapper = inner.as<ASTPartialStatement>();
+        if (!wrapper || std::string_view(wrapper->key) == "primary_key")
+            return;
+        storage = wrapper->statement->as<ASTStorage>();
+    }
+    else if (create.is_materialized_view)
+    {
+        if (create.targets && create.targets->tryGetTarget(ViewTarget::To) && !create.targets->getTableID(ViewTarget::To).empty())
+            return;
+        if (create.targets && create.targets->getTableASTWithQueryParams(ViewTarget::To))
+            return;
+        if (!create.targets)
+            create.set(create.targets, make_intrusive<ASTViewTargets>());
+        if (!create.targets->getInnerEngine(ViewTarget::To))
+            create.targets->setInnerEngine(ViewTarget::To, make_intrusive<ASTStorage>());
+        storage = create.targets->getInnerEngine(ViewTarget::To)->as<ASTStorage>();
+    }
+    else
+    {
+        if (!create.storage)
+            create.set(create.storage, make_intrusive<ASTStorage>());
+        storage = create.storage;
+    }
+
+    if (!storage || storage->primary_key)
+        return;
+    if (columns.primary_key)
+    {
+        storage->set(storage->primary_key, columns.primary_key->ptr());
+        columns.reset(columns.primary_key);
+    }
+    else
+    {
+        storage->set(storage->primary_key, columns.primary_key_from_columns->ptr());
+        columns.reset(columns.primary_key_from_columns);
+    }
+    storage->normalizeChildrenOrder();
+}
+
 }
 
 void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos pos, ASTSelectQuery::Expression slot)
@@ -285,57 +363,76 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
     if (!startCapture(expected, node, /*is_select=*/ false, fragment.get()))
         return;
 
+    const std::string_view what = expected_what;
+
+    /// Where in the list of a `CREATE` an `Error` after it goes: after the element written last, whose
+    /// list is found in the tree the parser built, as the order of the lists is not in it.
+    std::optional<size_t> column_list_kind;
+    if (const auto * create = node->as<ASTCreateQuery>(); create && what == "columns_list" && create->columns_list)
+    {
+        const IAST * last = expected.partial_ast_last_column_element.get();
+        const auto & list = *create->columns_list;
+        const ASTExpressionList * kinds[] = {list.columns, list.indices, list.constraints, list.projections};
+        for (size_t kind = 0; kind < std::size(kinds); ++kind)
+            if (kinds[kind] && !kinds[kind]->children.empty() && kinds[kind]->children.back().get() == last)
+                column_list_kind = kind;
+        if (hasOnlyColumns(list))
+            column_list_kind = 0;
+    }
+
     ASTPtr inner = fragment ? fragment : makeError(expected, pos);
     ASTPtr partial = node->clone();
-    const std::string_view what = expected_what;
     auto * insert = partial->as<ASTInsertQuery>();
     auto * create = partial->as<ASTCreateQuery>();
+    bool placed = false;
     if (insert && what == "columns" && insert->columns && insert->columns->as<ASTExpressionList>())
     {
         /// The list parsed and its `)` is missing: what failed is the element after the last one.
         insert->columns->children.push_back(inner);
-        storeCapture(expected, std::move(partial));
-        return;
+        placed = true;
     }
-
-    if (create && what == "aliases_list" && create->aliases_list)
+    else if (create && what == "aliases_list" && create->aliases_list)
     {
         create->aliases_list->children.push_back(inner);
-        storeCapture(expected, std::move(partial));
-        return;
+        placed = true;
     }
-
-    if (create && what == "dictionary_attributes_list" && create->dictionary_attributes_list)
+    else if (create && what == "dictionary_attributes_list" && create->dictionary_attributes_list)
     {
         create->dictionary_attributes_list->children.push_back(inner);
-        storeCapture(expected, std::move(partial));
-        return;
+        placed = true;
     }
-
-    if (create && what == "columns_list" && create->columns_list)
+    else if (create && what == "columns_list" && create->columns_list)
     {
-        /// Likewise for `CREATE TABLE t (a UInt8,`. Otherwise the whole list is what failed, and the
-        /// `Error` takes its place: an element that parsed after the last column cannot be told apart
-        /// from one before it.
-        if (hasOnlyColumns(*create->columns_list))
+        /// Likewise for `CREATE TABLE t (a UInt8,`. Without the element written last - a `PRIMARY KEY`
+        /// or a foreign key, which the list does not keep - the whole list is what failed.
+        auto & list = *create->columns_list;
+        ASTExpressionList * kinds[] = {list.columns, list.indices, list.constraints, list.projections};
+        if (column_list_kind)
         {
-            create->columns_list->columns->children.push_back(inner);
-            storeCapture(expected, std::move(partial));
-            return;
+            kinds[*column_list_kind]->children.push_back(inner);
+            placed = true;
         }
-        create->reset(create->columns_list);
+        else
+            create->reset(create->columns_list);
     }
-
-    if (create && what == "inner_engine")
+    else if (create && what == "inner_engine")
     {
-        /// The storage of a materialized view, which `ast` has as the inner engine of its `TO` target.
+        /// The storage of a materialized view, which `ast` has as the inner engine of its `To` target.
         if (!create->targets)
             create->set(create->targets, make_intrusive<ASTViewTargets>());
         create->targets->setInnerEngine(ViewTarget::To, inner);
+        placed = true;
+    }
+
+    if (create)
+        movePrimaryKeyToStorage(*create, *inner, what);
+
+    if (placed)
+    {
         storeCapture(expected, std::move(partial));
         return;
     }
-
+    resetSlot(*partial, what);
     storeCapture(expected, wrap(std::move(partial), std::move(inner), expected_what));
 }
 

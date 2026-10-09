@@ -561,6 +561,11 @@ bool ParserTablePropertiesDeclarationList::parseImpl(Pos & pos, ASTPtr & node, E
     if (primary_key_from_columns)
         res->set(res->primary_key_from_columns, primary_key_from_columns);
 
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    if (expected.enable_partial_ast_capture)
+        expected.partial_ast_last_column_element = list->children.back();
+#endif
+
     node = res;
 
     return true;
@@ -878,9 +883,9 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
     const ASTPtr * comment_so_far = nullptr;
 
     /// The parts stay in the locals above until the whole query has parsed, so the tree a failure
-    /// captures is assembled from them, with the casts the success path makes; see
-    /// `Parsers/PartialASTCapture.h`. Unlike the success path, it leaves a `PRIMARY KEY` declared in
-    /// the column list where it is, instead of moving it into the storage definition.
+    /// captures is assembled from them, with the casts the success path makes and without its checks;
+    /// see `Parsers/PartialASTCapture.h`. The capture moves a `PRIMARY KEY` declared in the column list
+    /// into the storage definition, as the success path does, in its copy.
     auto tree_so_far = [&]() -> ASTPtr
     {
         auto partial = make_intrusive<ASTCreateQuery>();
@@ -910,7 +915,9 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         }
         partial->has_inner_uuid_clause = to_inner_uuid != nullptr;
         tryGetIdentifierNameInto(as_database, partial->as_database);
-        tryGetIdentifierNameInto(as_table, partial->as_table);
+        /// After `AS db.`, `as_table` is still the database, until the table name parses.
+        if (as_table != as_database)
+            tryGetIdentifierNameInto(as_table, partial->as_table);
         partial->set(partial->columns_list, columns_list);
         partial->set(partial->storage, storage);
         partial->set(partial->as_table_function, as_table_function);
@@ -918,7 +925,17 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
             partial->set(partial->comment, *comment_so_far);
         if (sql_security)
             partial->set(partial->sql_security, sql_security);
-        partial->set(partial->targets, targets);
+        UUID inner_uuid = UUIDHelpers::Nil;
+        if (to_inner_uuid && !targets)
+            tryParse(inner_uuid, to_inner_uuid->as<ASTLiteral &>().value.safeGet<String>());
+        if (inner_uuid != UUIDHelpers::Nil)
+        {
+            auto view_targets = make_intrusive<ASTViewTargets>();
+            view_targets->setInnerUUID(ViewTarget::To, inner_uuid);
+            partial->set(partial->targets, view_targets);
+        }
+        else
+            partial->set(partial->targets, targets);
         if (from_path)
         {
             partial->attach_from_path = from_path->as<ASTLiteral &>().value.safeGet<String>();
@@ -958,7 +975,10 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
     {
         ParserStringLiteral literal_p;
         if (!literal_p.parse(pos, to_inner_uuid, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "targets");
             return false;
+        }
     }
 
     std::optional<bool> attach_as_replicated = std::nullopt;
@@ -971,13 +991,19 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         {
             ParserStringLiteral from_path_p;
             if (!from_path_p.parse(pos, from_path, expected))
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "attach_from_path");
                 return false;
+            }
         } else if (s_as.ignore(pos, expected))
         {
             if (s_not.ignore(pos, expected))
                 attach_as_replicated = false;
             if (!s_replicated.ignore(pos, expected))
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "attach_as_replicated");
                 return false;
+            }
             if (!attach_as_replicated.has_value())
                 attach_as_replicated = true;
         }
@@ -1103,8 +1129,22 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
 
         /// Accept both "EMPTY COMMENT ... AS" and "COMMENT ... EMPTY AS" orderings.
         try_parse_empty_or_clone();
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+        const char * max_before_sql_security = expected.max_parsed_pos;
+#endif
         sql_security_p.parse(pos, sql_security, expected);
+        /// Optional, so the parse goes on; captured only if its parser got further than both the parse
+        /// before it and its first token. Likewise the comment.
+        PARTIAL_AST_SNAPSHOT(
+            expected, !sql_security && expected.max_parsed_pos > std::max(max_before_sql_security, pos->begin) ? tree_so_far() : nullptr,
+            pos, "sql_security");
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+        const char * max_before_comment = expected.max_parsed_pos;
+#endif
         comment = parseComment(pos, expected);
+        PARTIAL_AST_SNAPSHOT(
+            expected, !comment && expected.max_parsed_pos > std::max(max_before_comment, pos->begin) ? tree_so_far() : nullptr, pos,
+            "comment");
         try_parse_empty_or_clone();
 
         /// When EMPTY or CLONE was parsed, AS is required; otherwise AS is optional.
@@ -1112,7 +1152,10 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         if (is_create_empty || is_clone_as)
         {
             if (!ParserKeyword{Keyword::AS}.ignore(pos, expected))
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "select");
                 return false;
+            }
             has_as = true;
         }
         else
@@ -1147,9 +1190,25 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         parse_storage();
 
         try_parse_empty_or_clone();
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+        const char * max_before_sql_security = expected.max_parsed_pos;
+#endif
         sql_security_p.parse(pos, sql_security, expected);
+        /// Optional, so the parse goes on; captured only if its parser got further than both the parse
+        /// before it and its first token. Likewise the comment.
+        PARTIAL_AST_SNAPSHOT(
+            expected, !sql_security && expected.max_parsed_pos > std::max(max_before_sql_security, pos->begin) ? tree_so_far() : nullptr,
+            pos, "sql_security");
         if (!comment)
+        {
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+            const char * max_before_comment = expected.max_parsed_pos;
+#endif
             comment = parseComment(pos, expected);
+            PARTIAL_AST_SNAPSHOT(
+                expected, !comment && expected.max_parsed_pos > std::max(max_before_comment, pos->begin) ? tree_so_far() : nullptr, pos,
+                "comment");
+        }
         try_parse_empty_or_clone();
 
         /// When EMPTY or CLONE was parsed, AS is required; otherwise AS is optional.
@@ -1157,7 +1216,10 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         if (is_create_empty || is_clone_as)
         {
             if (!ParserKeyword{Keyword::AS}.ignore(pos, expected))
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "select");
                 return false;
+            }
             has_as = true;
         }
         else
@@ -1168,19 +1230,35 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         {
             if (!select_p.parse(pos, select, expected)) /// AS SELECT ...
             {
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+                const char * max_before_function = expected.max_parsed_pos;
+#endif
                 /// ENGINE can not be specified for table functions.
                 if (storage || !table_function_p.parse(pos, as_table_function, expected))
                 {
                     /// AS [db.]table
                     if (!name_p.parse(pos, as_table, expected))
+                    {
+                        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "select");
                         return false;
+                    }
 
                     if (s_dot.ignore(pos, expected))
                     {
                         as_database = as_table;
                         if (!name_p.parse(pos, as_table, expected))
+                        {
+                            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "as_table");
                             return false;
+                        }
                     }
+
+                    /// The table function was tried first, and the name parsed instead: it failed if its
+                    /// parser got further than the name and than the parse before it (`AS remote(`).
+                    PARTIAL_AST_SNAPSHOT(
+                        expected,
+                        !storage && expected.max_parsed_pos > std::max(max_before_function, pos->begin) ? tree_so_far() : nullptr,
+                        pos, "as_table_function");
 
                     /// Optional - ENGINE can be specified.
                     if (!storage)
@@ -1192,7 +1270,15 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
 
     if (select || as_table || as_table_function)
     {
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+        const char * max_before_comment = expected.max_parsed_pos;
+#endif
         auto select_comment = parseComment(pos, expected);
+        /// Likewise optional; not where a comment before `AS` parsed, which the success path rejects.
+        PARTIAL_AST_SNAPSHOT(
+            expected,
+            !comment && !select_comment && expected.max_parsed_pos > std::max(max_before_comment, pos->begin) ? tree_so_far() : nullptr,
+            pos, "comment");
         if (comment && select_comment)
             throw Exception(
                 ErrorCodes::SYNTAX_ERROR,
@@ -1201,7 +1287,15 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
             comment = select_comment;
     }
     else if (!comment)
+    {
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+        const char * max_before_comment = expected.max_parsed_pos;
+#endif
         comment = parseComment(pos, expected);
+        PARTIAL_AST_SNAPSHOT(
+            expected, !comment && expected.max_parsed_pos > std::max(max_before_comment, pos->begin) ? tree_so_far() : nullptr, pos,
+            "comment");
+    }
 
     /// `AS table` and `AS table_function` are formatted before the SQL SECURITY clause position,
     /// so allowing them together would produce text that does not parse back.

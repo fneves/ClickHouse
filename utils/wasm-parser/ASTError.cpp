@@ -34,10 +34,12 @@ bool isPartialStatementKey(const IAST & statement, std::string_view key)
     };
 
     if (statement.as<ASTInsertQuery>())
-        return is_one_of({"table", "table_function", "partition_by", "infile", "compression", "settings_ast", "format", "columns"});
+        return is_one_of({"table", "table_function", "partition_by", "infile", "compression", "settings_ast", "format", "columns",
+            "select"});
     if (statement.as<ASTCreateQuery>())
         return is_one_of({"table_ast", "cluster", "columns_list", "storage", "select", "as_table_function", "aliases_list",
-            "refresh_strategy", "targets", "sql_security", "comment", "dictionary_attributes_list", "dictionary"});
+            "refresh_strategy", "targets", "sql_security", "comment", "dictionary_attributes_list", "dictionary", "as_table",
+            "attach_from_path", "attach_as_replicated"});
     if (statement.as<ASTAlterQuery>())
         return is_one_of({"database_ast", "table_ast", "cluster", "command_list"});
     if (statement.as<ASTAlterCommand>())

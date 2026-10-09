@@ -107,6 +107,9 @@ struct Expected
     /// The capture of the node around it at that position takes it in place of an `Error`.
     ASTPtr partial_ast_fragment;
     const char * partial_ast_fragment_pos = nullptr;
+    /// The last element of the last list of columns and table properties that parsed, in the order
+    /// written, which `ASTColumns` does not keep: an `Error` after the list follows it.
+    ASTPtr partial_ast_last_column_element;
 #endif
 
     /// 'description' should be statically allocated string.

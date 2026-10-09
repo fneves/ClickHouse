@@ -426,8 +426,10 @@ if (hasAstJson) {
         ['SELECT a FROM t WHERE x IN (SELECT', 'SelectQuery', 'select', 34, 34],
         /// Captured at the column list, which the parser then got past.
         ['INSERT INTO t (SELECT 1 FROM x) VALUES', null],
-        ['INSERT INTO t', null],
-        ['INSERT INTO t (a) VALUE', null],
+        /// A missing data source is an `Error` in `select`, the one source `ast` has as a tree.
+        ['INSERT INTO t', 'InsertQuery', 'select', 13, 13],
+        ['INSERT INTO t (a) VALUE', 'InsertQuery', 'select', 18, 23],
+        ['INSERT INTO t SELECT 1 SETTINGS max_threads = 1 FORMAT', 'InsertQuery', 'format', 54, 54],
 
         ['CREATE TABLE', 'CreateQuery', 'table_ast', 12, 12],
         ['CREATE TABLE t ON CLUSTER', 'CreateQuery', 'cluster', 25, 25],
@@ -435,8 +437,12 @@ if (hasAstJson) {
         ['CREATE TABLE t (a UInt8,', 'CreateQuery', 'columns_list.columns.children[1]', 24, 24],
         ["CREATE TABLE t (a String DEFAULT 'abc", 'CreateQuery', 'columns_list', 33, 37],
         /// The list does not keep the order of columns and indices, so the whole list is the slot.
-        ['CREATE TABLE t (INDEX i a TYPE minmax,', 'CreateQuery', 'columns_list', 38, 38],
-        ['CREATE TABLE t (a UInt8, INDEX i a TYPE minmax GRANULARITY 1', 'CreateQuery', 'columns_list', 60, 60],
+        ['CREATE TABLE t (INDEX i a TYPE minmax,', 'CreateQuery', 'columns_list.indices.children[1]', 38, 38],
+        ['CREATE TABLE t (a UInt8, INDEX i a TYPE minmax GRANULARITY 1', 'CreateQuery', 'columns_list.indices.children[1]', 60, 60],
+        ['CREATE TABLE t (INDEX i a TYPE minmax, a UInt8', 'CreateQuery', 'columns_list.columns.children[1]', 46, 46],
+        ['CREATE TABLE t (a UInt8, CONSTRAINT c CHECK a > 0', 'CreateQuery', 'columns_list.constraints.children[1]', 49, 49],
+        /// A `PRIMARY KEY` written last is not in a list of `columns_list`, so the whole list is the slot.
+        ['CREATE TABLE t (a UInt8, PRIMARY KEY a', 'CreateQuery', 'columns_list', 38, 38],
         [`${T} ENGINE = MergeTree AS`, 'CreateQuery', 'select', 46, 46],
         [`${T} EMPTY AS`, 'CreateQuery', 'as_table_function', 33, 33],
         [`${T} CLONE AS`, 'CreateQuery', 'as_table_function', 33, 33],
@@ -460,14 +466,25 @@ if (hasAstJson) {
         ['CREATE TABLE t AS other ENGINE =', 'CreateQuery', 'storage.engine', 32, 32],
         ['CREATE TEMPORARY TABLE t (a UInt8) ENGINE =', 'CreateQuery', 'storage.engine', 43, 43],
         [`${T} BLAH`, null],
-        [`${T} COMMENT`, null],
+        [`${T} COMMENT`, 'CreateQuery', 'comment', 32, 32],
+        [`${T} SQL SECURITY`, 'CreateQuery', 'sql_security', 37, 37],
+        ['CREATE TABLE t AS other COMMENT', 'CreateQuery', 'comment', 31, 31],
         [`${T} COMMENT 'x' ENGINE =`, null],
         [`${T} ENGINE = MergeTree ORDER BY a,`, null],
         [`${T} ENGINE = MergeTree ORDER BY a >`, null],
-        ['CREATE TABLE t AS x.y.z', null],
-        ['CREATE TABLE t AS db.', null],
+        /// The statement parsed up to `remote`: the unmatched `(` is input after it, not a failure in it.
         ['CREATE TABLE t AS remote(', null],
-        ['CREATE TABLE t ENGINE = MergeTree AS', null],
+        /// The table function, tried first, got furthest: `x.y.z` as its name, then no `(`.
+        ['CREATE TABLE t AS x.y.z', 'CreateQuery', 'as_table_function', 23, 23],
+        ['CREATE TABLE t AS db.', 'CreateQuery', 'as_table', 21, 21],
+        ["CREATE TABLE t AS remote('h',", 'CreateQuery', 'as_table_function', 29, 29],
+        /// After `AS`, nothing parsed: `select`, as for a table with columns.
+        ['CREATE TABLE t AS', 'CreateQuery', 'select', 17, 17],
+        ['CREATE TABLE t ENGINE = MergeTree AS', 'CreateQuery', 'select', 36, 36],
+        [`${T} ENGINE = Memory EMPTY`, 'CreateQuery', 'select', 46, 46],
+        ['ATTACH TABLE t FROM', 'CreateQuery', 'attach_from_path', 19, 19],
+        ['ATTACH TABLE t AS NOT', 'CreateQuery', 'attach_as_replicated', 21, 21],
+        ['CREATE TABLE t TO INNER UUID', 'CreateQuery', 'targets', 28, 28],
 
         ['CREATE VIEW', 'CreateQuery', 'table_ast', 11, 11],
         ['CREATE VIEW v ON CLUSTER', 'CreateQuery', 'cluster', 24, 24],
@@ -605,6 +622,21 @@ if (hasAstJson) {
             ['ALTER TABLE t UPDATE a = 1 WHERE', ' 1', ['command_list.children.0.command_type', 'command_list.children.0.update_assignments']],
             ['ALTER TABLE t MODIFY REFRESH EVERY 1 HOUR OFFSET', ' 5 MINUTE', ['command_list.children.0.command_type', 'command_list.children.0.refresh.period']],
             ['ALTER DATABASE d MODIFY SETTING', ' x = 1', ['database_ast', 'alter_object', 'command_list.children.0.command_type']],
+            /// The `SETTINGS` of the `SELECT` of an `INSERT` are in those of the `INSERT` too.
+            ['INSERT INTO t SETTINGS a = 2 SELECT 1 SETTINGS max_threads = 1, a = 3 FORMAT', ' CSV', ['settings_ast', 'select']],
+            /// A `PRIMARY KEY` in the column list is in the storage definition, also one that failed.
+            ['CREATE TABLE t (a UInt8, PRIMARY KEY a) ENGINE = MergeTree ORDER BY', ' a', ['columns_list', 'storage.engine',
+                'storage.primary_key']],
+            ['CREATE TABLE t (a UInt8 PRIMARY KEY) ENGINE = MergeTree ORDER BY', ' a', ['columns_list', 'storage.primary_key']],
+            ['CREATE TABLE t (a UInt8, PRIMARY KEY a) COMMENT', " 'c'", ['columns_list', 'storage']],
+            ['CREATE MATERIALIZED VIEW v (a UInt8, PRIMARY KEY a) ENGINE = MergeTree ORDER BY a', ' AS SELECT 1 AS a',
+                ['columns_list', 'targets']],
+            ['CREATE MATERIALIZED VIEW v (a UInt8, PRIMARY KEY a) ENGINE = MergeTree ORDER BY', ' a AS SELECT 1 AS a',
+                ['columns_list', 'targets.targets.0.inner_engine.engine', 'targets.targets.0.inner_engine.primary_key']],
+            /// `TO INNER UUID` is in `targets`, as in `ast`.
+            ["CREATE TABLE t TO INNER UUID '123e4567-e89b-12d3-a456-426614174000' (a UInt8,", ' b UInt8) ENGINE = SharedSet',
+                ['targets', 'has_inner_uuid_clause']],
+            ['CREATE TABLE t AS db.', 'other', ['as_database']],
         ]) {
             const partial = parsed(prefix).doc?.partial_ast;
             let ast = parsed(prefix + rest).doc?.ast;

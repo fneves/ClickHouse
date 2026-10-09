@@ -557,6 +557,13 @@ if (hasAstJson) {
             check(`nor the query around it: ${around.slice(0, 30)}...`, !r.ok
                 && r.doc?.partial_ast === undefined && r.doc?.error?.message === format(around, 1).out);
         }
+        /// A document `ch_format_json` would not read is turned away as an "ast" is: one node, over 1 MiB.
+        const literal = `[${Array(60000).fill('1').join(', ')}]`;
+        const bigAst = parsed(`SELECT ${literal} FROM t`).doc;
+        const bigPartial = parsed(`SELECT ${literal} FROM`).doc;
+        check('a partial_ast over the document size of an ast is null, for the same reason', bigAst?.ast === null
+            && bigPartial?.partial_ast === null && /too big/.test(bigAst?.ast_error ?? '')
+            && bigPartial?.partial_ast_error === bigAst.ast_error);
     }
 }
 

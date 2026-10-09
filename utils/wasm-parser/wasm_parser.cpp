@@ -240,7 +240,8 @@ size_t jsonNestingDepth(const char * json, size_t size)
 /// Every AST JSON document this module reads passes through here, `serializeBody` included: it is
 /// what "the limits of `ch_format_json`" means, in one place, so that the producer can be held to
 /// them by running them rather than by restating them.
-DB::ASTPtr readASTJSON(const char * json, size_t size)
+/// The limits of an AST JSON document as text, before any of it is parsed.
+void checkASTJSONDocument(const char * json, size_t size)
 {
     /// `createFromJSON` bounds the AST it builds, but `Poco::JSON::Parser` materializes the whole
     /// document first, so the raw text is bounded up front, as `formatQueryFromJSON` does on the
@@ -249,6 +250,11 @@ DB::ASTPtr readASTJSON(const char * json, size_t size)
         throw DB::Exception(DB::ErrorCodes::TOO_BIG_AST, "AST JSON is too big. Maximum: {}", MAX_QUERY_SIZE);
     if (jsonNestingDepth(json, size) > MAX_AST_JSON_NESTING)
         throw DB::Exception(DB::ErrorCodes::TOO_DEEP_AST, "AST JSON is nested too deeply. Maximum: {}", MAX_AST_JSON_NESTING);
+}
+
+DB::ASTPtr readASTJSON(const char * json, size_t size)
+{
+    checkASTJSONDocument(json, size);
 
     /// Deserialization throws for anything wrong with the document - malformed JSON, an unknown
     /// node type, a field of the wrong shape, a tree past the depth or element limits - and the
@@ -331,17 +337,22 @@ extern "C" int serializeBody(void * argument)
 
 #if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
 static_assert(DB::PARTIAL_AST_MAX_DEPTH == MAX_PARSER_DEPTH && DB::PARTIAL_AST_MAX_ELEMENTS == MAX_AST_ELEMENTS,
-    "A partial tree is captured within the limits of an `ast`");
+    "A partial tree is captured within the node limits of an `ast`");
 
 /// The "partial_ast" of a failed parse. Not read back: it contains an `Error` node, which
-/// `ch_format_json` rejects by design, so there is no round trip to hold it to. Held to the budgets
-/// of an "ast" all the same: the capture measured the tree before its `Error` was added.
+/// `ch_format_json` rejects by design, and without it the tree is still not one the reader accepts -
+/// a `SELECT` with no select list, an `INSERT` with no table. So it is held to what can be checked
+/// without the reader: the node limits that `serializeBody` checks first - the capture measured the
+/// tree before its `Error` was added - and the limits of the document as text. Not to the element
+/// budget of the reader, which also counts what is not a node - the values of structured `Field`s,
+/// the parts of compound identifiers and more - by rules that live in the `readJSON` of each node.
 extern "C" int serializePartialBody(void * argument)
 {
     const auto & request = *static_cast<const SerializeRequest *>(argument);
     request.ast->checkDepth(MAX_PARSER_DEPTH);
     request.ast->checkSize(MAX_AST_ELEMENTS);
     *request.json = DB::serializeASTToJSON(*request.ast);
+    checkASTJSONDocument(request.json->data(), request.json->size());
     return 1;
 }
 #endif

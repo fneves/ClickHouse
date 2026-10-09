@@ -271,6 +271,9 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         /// Note that FROM INFILE was already parsed before, so FROM at this position starts a SELECT query.
         pos = before_values;
         ParserSelectWithUnionQuery select_p;
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+        const PartialASTOuterWith partial_ast_outer_with(expected, with_expression_list);
+#endif
         select_p.parse(pos, select, expected);
 
         if (with_expression_list && select)

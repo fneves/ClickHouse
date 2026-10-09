@@ -22,10 +22,12 @@ namespace
 /// and `IAST::checkSize` count. Iterative, and it stops at the first node past a limit, so measuring
 /// a tree of any shape is cheap and cannot throw - unlike cloning it, which is recursive and, for the
 /// left-deep tree of a long operator chain, runs out of the engine's stack, which `checkStackSize`
-/// cannot see.
-bool fitsPartialASTLimits(const IAST & root)
+/// cannot see. `child`, if any, is measured as one more child of `root`.
+bool fitsPartialASTLimits(const IAST & root, const IAST * child)
 {
     std::vector<std::pair<const IAST *, size_t>> nodes{{&root, 0}};
+    if (child)
+        nodes.emplace_back(child, 1);
     size_t size = 0;
     while (!nodes.empty())
     {
@@ -40,7 +42,8 @@ bool fitsPartialASTLimits(const IAST & root)
 }
 
 /// The checks every capture makes before it clones anything; false if it should not be taken.
-bool startCapture(Expected & expected, const ASTPtr & node, bool is_select)
+/// `extra` is a tree that the capture adds to `node` as one more child.
+bool startCapture(Expected & expected, const ASTPtr & node, bool is_select, const IAST * extra = nullptr)
 {
     if (!expected.enable_partial_ast_capture || !node)
         return false;
@@ -60,7 +63,7 @@ bool startCapture(Expected & expected, const ASTPtr & node, bool is_select)
 
     /// A tree that could never be an `ast` is not reported either. Nothing captured before it is: that
     /// was a shallower failure, and the parse got further. Nor anything around it at this position.
-    if (!fitsPartialASTLimits(*node))
+    if (!fitsPartialASTLimits(*node, extra))
     {
         expected.partial_ast = nullptr;
         expected.partial_ast_pos = expected.max_parsed_pos;
@@ -109,12 +112,25 @@ bool hasOnlyColumns(const ASTColumns & list)
 
 void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos pos, ASTSelectQuery::Expression slot)
 {
-    if (!startCapture(expected, node, /*is_select=*/ true))
+    /// A `SELECT` of the union of an `INSERT` - not nested in another `SELECT` of it - gets the `WITH`
+    /// written before the `INSERT`, where `ast` has it, unless it has a `WITH` of its own.
+    const IAST * outer_with = nullptr;
+    if (node && expected.partial_ast_outer_with && expected.partial_ast_selects == expected.partial_ast_outer_with_selects + 1
+        && !node->as<ASTSelectQuery &>().with())
+        outer_with = expected.partial_ast_outer_with.get();
+
+    if (!startCapture(expected, node, /*is_select=*/ true, outer_with))
         return;
 
     auto error = makeError(expected, pos);
     ASTPtr partial = node->clone();
-    partial->as<ASTSelectQuery &>().setExpression(slot, ASTPtr(error));
+    auto & select = partial->as<ASTSelectQuery &>();
+    select.setExpression(slot, ASTPtr(error));
+    if (outer_with)
+    {
+        select.setExpression(ASTSelectQuery::Expression::WITH, outer_with->clone());
+        select.normalizeChildrenOrder();
+    }
     storeCapture(expected, std::move(partial));
 }
 

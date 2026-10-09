@@ -96,6 +96,12 @@ struct Expected
     /// `max_parsed_pos` it was captured at.
     ASTPtr partial_ast;
     const char * partial_ast_pos = nullptr;
+    /// The number of `SELECT`s being parsed, and inside an `INSERT`, the `WITH` written before it and
+    /// that number when the `INSERT` starts its own `SELECT`: a capture one `SELECT` deeper is a
+    /// `SELECT` of the union of the `INSERT`, which `ast` gives that `WITH`.
+    size_t partial_ast_selects = 0;
+    ASTPtr partial_ast_outer_with;
+    size_t partial_ast_outer_with_selects = 0;
 #endif
 
     /// 'description' should be statically allocated string.

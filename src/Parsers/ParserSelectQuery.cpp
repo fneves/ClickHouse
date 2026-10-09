@@ -326,6 +326,10 @@ bool parseLimitRange(IParser::Pos & pos, Expected & expected, ASTPtr & limit_aft
 
 bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 {
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    const PartialASTSelectScope partial_ast_select_scope(expected);
+#endif
+
     auto select_query = make_intrusive<ASTSelectQuery>();
     node = select_query;
 

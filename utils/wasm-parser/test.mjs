@@ -403,8 +403,6 @@ if (hasAstJson) {
         ['INSERT INTO t SETTINGS', 'InsertQuery', 'settings_ast', 22, 22],
         ['INSERT INTO t SELECT a FROM', 'SelectQuery', 'tables', 27, 27],
         ['INSERT INTO t SELECT 1 UNION ALL SELECT a FROM', 'SelectQuery', 'tables', 46, 46],
-        /// A `WITH` before `INSERT` is not added to the `SELECT` that failed: it could be a subquery.
-        ['WITH cte AS (SELECT 1) INSERT INTO dst SELECT * FROM cte WHERE', 'SelectQuery', 'where', 62, 62],
         /// The column alias list after the tables, where a modifier ends the table expression.
         ['SELECT * FROM t FINAL (', 'SelectQuery', 'aliases', 23, 23],
         ['SELECT * FROM t SAMPLE 1 (a', 'SelectQuery', 'aliases', 27, 27],
@@ -514,6 +512,28 @@ if (hasAstJson) {
                 ast = ast.list_of_selects.children[0];
             check(`...with ${keys.join(', ')} as in the ast of the whole statement: ${prefix.slice(0, 40)}`,
                 keys.every(k => partial?.[k] !== undefined && JSON.stringify(partial[k]) === JSON.stringify(ast?.[k])));
+        }
+
+        /// A `WITH` written before `INSERT` is in each `SELECT` of the union of the `INSERT`, as in the
+        /// "ast" of the whole statement, and not in a `SELECT` nested in one of them.
+        const at = (tree, path) => path.split('.').reduce((v, k) => v?.[k], tree);
+        const outer = 'WITH c AS (SELECT 1) INSERT INTO t';
+        const union = 'select.list_of_selects.children';
+        for (const [prefix, rest, path, hasWith] of [
+            [`${outer} SELECT * FROM c WHERE`, ' 1', `${union}.0`, true],
+            [`${outer} SELECT 1 UNION ALL SELECT * FROM c WHERE`, ' 1', `${union}.1`, true],
+            [`${outer} (SELECT * FROM c WHERE`, ' 1)', `${union}.0`, true],
+            [`${outer} SELECT 1 UNION ALL (SELECT * FROM c WHERE`, ' 1)', `${union}.1`, true],
+            [`${outer} SELECT * FROM (SELECT a FROM`, ' c)',
+                `${union}.0.tables.children.0.table_expression.subquery.children.0.list_of_selects.children.0`, false],
+            [`${outer} SELECT * FROM c WHERE x IN (SELECT a FROM`, ' c)',
+                `${union}.0.where.arguments.children.1.children.0.list_of_selects.children.0`, false],
+        ]) {
+            const partial = parsed(prefix).doc?.partial_ast;
+            const select = at(parsed(prefix + rest).doc?.ast, path);
+            check(`...${hasWith ? 'with' : 'without'} the WITH before INSERT, as in the ast: ${prefix.slice(outer.length + 1, outer.length + 41)}`,
+                partial?.type === 'SelectQuery' && select?.type === 'SelectQuery' && (partial.with !== undefined) === hasWith
+                && JSON.stringify(partial.with) === JSON.stringify(select.with));
         }
 
         /// Past the limits of an "ast" there is no partial_ast, and the error is the one without it.

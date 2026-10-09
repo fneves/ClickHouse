@@ -118,11 +118,10 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
     (`ENGINE`, `ORDER BY` and the rest), `AS SELECT` and an `AS` table function;
   * `ALTER`: the database or table name, `ON CLUSTER` and the list of commands.
 * Its root is the deepest statement node that captured: the one whose failure got furthest into
-  the query. Of statements nested in each other that failed at the same place, a `SELECT` is
-  reported over an enclosing `SELECT`, and an `INSERT`, `CREATE` or `ALTER` only if nothing
-  inside it captured: `INSERT INTO t SELECT a FROM` reports the `SelectQuery`, with no
-  `SelectWithUnionQuery` or `InsertQuery` around it. The clauses that parsed before the failure
-  are there as in `ast`.
+  the query, and of statements nested in each other that failed at the same place, the innermost.
+  `SELECT * FROM (SELECT a FROM` reports the subquery, `INSERT INTO t SELECT a FROM` the
+  `SelectQuery`, with no `SelectWithUnionQuery`, enclosing `SelectQuery` or `InsertQuery` around
+  it. The clauses that parsed before the failure are there as in `ast`.
 * The slot that failed holds an `Error` node instead of a clause: `begin` and `end` are byte
   offsets of where the parser stopped, the rightmost position it recorded what it `expected`
   there - the same list as in `error`. A broken expression is one `Error` in its clause. That

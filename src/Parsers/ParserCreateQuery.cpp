@@ -1554,6 +1554,66 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
     bool replace_view = false;
     bool is_temporary = false;
 
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    /// Declared further down, after the first capture site; it points there once declared.
+    const ASTPtr * comment_so_far = nullptr;
+
+    /// The parts stay in the locals above until the whole query has parsed, so the tree a failure
+    /// captures is assembled from them, the way the success path assembles it, without its checks;
+    /// see `Parsers/PartialASTCapture.h`.
+    auto tree_so_far = [&]() -> ASTPtr
+    {
+        auto partial = make_intrusive<ASTCreateQuery>();
+        partial->attach = attach;
+        partial->if_not_exists = if_not_exists;
+        partial->is_ordinary_view = is_ordinary_view;
+        partial->is_materialized_view = is_materialized_view;
+        partial->is_populate = is_populate;
+        partial->is_create_empty = is_create_empty;
+        partial->replace_view = replace_view;
+        partial->setIsTemporary(is_temporary);
+        partial->cluster = cluster_str;
+        if (table)
+        {
+            const auto & table_id = table->as<ASTTableIdentifier &>();
+            partial->database = table_id.getDatabase();
+            partial->table = table_id.getTable();
+            partial->uuid = table_id.uuid;
+            partial->has_uuid = table_id.uuid != UUIDHelpers::Nil;
+            partial->has_uuid_clause = table_id.has_uuid;
+            if (partial->database)
+                partial->children.push_back(partial->database);
+            if (partial->table)
+                partial->children.push_back(partial->table);
+        }
+        partial->set(partial->columns_list, columns_list);
+        partial->set(partial->aliases_list, aliases_list);
+        if (refresh_strategy)
+            partial->set(partial->refresh_strategy, refresh_strategy);
+        if (comment_so_far && *comment_so_far)
+            partial->set(partial->comment, *comment_so_far);
+        if (sql_security)
+            partial->set(partial->sql_security, sql_security);
+        UUID inner_uuid = UUIDHelpers::Nil;
+        if (to_inner_uuid)
+            tryParse(inner_uuid, to_inner_uuid->as<ASTLiteral &>().value.safeGet<String>());
+        if (to_table || inner_uuid != UUIDHelpers::Nil || storage)
+        {
+            auto targets = make_intrusive<ASTViewTargets>();
+            if (to_table && to_table->as<ASTTableIdentifier &>().isParam())
+                targets->setTableASTWithQueryParams(ViewTarget::To, to_table);
+            else if (to_table)
+                targets->setTableID(ViewTarget::To, to_table->as<ASTTableIdentifier &>().getTableId());
+            targets->setInnerUUID(ViewTarget::To, inner_uuid);
+            if (storage)
+                targets->setInnerEngine(ViewTarget::To, storage);
+            partial->set(partial->targets, targets);
+        }
+        partial->set(partial->select, select);
+        return partial;
+    };
+#endif
+
     if (!s_create.ignore(pos, expected))
     {
         if (s_attach.ignore(pos, expected))
@@ -1589,34 +1649,52 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         if_not_exists = true;
 
     if (!table_name_p.parse(pos, table, expected))
+    {
+        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "table_ast");
         return false;
+    }
 
     if (ParserKeyword{Keyword::ON}.ignore(pos, expected))
     {
         if (!ASTQueryWithOnCluster::parse(pos, cluster_str, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "cluster");
             return false;
+        }
     }
 
     if (ParserKeyword{Keyword::REFRESH}.ignore(pos, expected))
     {
         // REFRESH only with materialized views
         if (!is_materialized_view)
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "refresh_strategy");
             return false;
+        }
         if (!ParserRefreshStrategy{}.parse(pos, refresh_strategy, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "refresh_strategy");
             return false;
+        }
     }
 
     if (is_materialized_view && ParserKeyword{Keyword::TO_INNER_UUID}.ignore(pos, expected))
     {
         ParserStringLiteral literal_p;
         if (!literal_p.parse(pos, to_inner_uuid, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "targets");
             return false;
+        }
     }
     else if (is_materialized_view && ParserKeyword{Keyword::TO}.ignore(pos, expected))
     {
         // TO [db.]table
         if (!table_name_p.parse(pos, to_table, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "targets");
             return false;
+        }
     }
 
     /// Optional - a list of columns can be specified. It must fully comply with SELECT.
@@ -1626,25 +1704,37 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         if (!table_properties_p.parse(pos, columns_list, expected))
         {
             if (!expr_list_aliases.parse(pos, aliases_list, expected))
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "columns_list");
                 return false;
+            }
             else
                 has_aliases = true;
         }
         else
         {
             if (!s_rparen.ignore(pos, expected))
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "columns_list");
                 return false;
+            }
             if (s_lparen.ignore(pos, expected))
             {
                 has_aliases = true;
                 if (!expr_list_aliases.parse(pos, aliases_list, expected))
+                {
+                    PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "aliases_list");
                     return false;
+                }
             }
         }
 
         if (has_aliases)
             if (!s_rparen.ignore(pos, expected))
+            {
+                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "aliases_list");
                 return false;
+            }
     }
 
     if (is_materialized_view)
@@ -1653,7 +1743,15 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         {
             /// Internal ENGINE for MATERIALIZED VIEW must be specified.
             /// Actually check it in Interpreter as default_table_engine can be set
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+            const char * max_before = expected.max_parsed_pos;
+#endif
             storage_p.parse(pos, storage, expected);
+            /// Optional, so the parse goes on; captured only if the storage parser got further than both
+            /// the parse before it and its first token.
+            PARTIAL_AST_SNAPSHOT(
+                expected, !storage && expected.max_parsed_pos > std::max(max_before, pos->begin) ? tree_so_far() : nullptr, pos,
+                "inner_engine");
 
             if (s_populate.ignore(pos, expected))
                 is_populate = true;
@@ -1684,7 +1782,16 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
     }
 
     if (!sql_security)
+    {
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+        const char * max_before = expected.max_parsed_pos;
+#endif
         sql_security_p.parse(pos, sql_security, expected);
+        /// Likewise optional.
+        PARTIAL_AST_SNAPSHOT(
+            expected, !sql_security && expected.max_parsed_pos > std::max(max_before, pos->begin) ? tree_so_far() : nullptr, pos,
+            "sql_security");
+    }
 
     /// Accept both "POPULATE/EMPTY COMMENT" and "COMMENT POPULATE/EMPTY" orderings for materialized views.
     auto try_parse_populate_or_empty = [&]()
@@ -1714,7 +1821,16 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
     };
 
     try_parse_populate_or_empty();
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    const char * max_before_comment = expected.max_parsed_pos;
+#endif
     auto comment = parseComment(pos, expected);
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    comment_so_far = &comment;
+#endif
+    /// Likewise optional.
+    PARTIAL_AST_SNAPSHOT(
+        expected, !comment && expected.max_parsed_pos > std::max(max_before_comment, pos->begin) ? tree_so_far() : nullptr, pos, "comment");
     try_parse_populate_or_empty();
 
     /// The first refresh of a refreshable materialized view already fills it with data, so 'POPULATE'
@@ -1727,10 +1843,16 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
 
     /// AS SELECT ...
     if (!s_as.ignore(pos, expected))
+    {
+        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "select");
         return false;
+    }
 
     if (!select_p.parse(pos, select, expected))
+    {
+        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "select");
         return false;
+    }
 
     auto select_comment = parseComment(pos, expected);
     if (comment && select_comment)

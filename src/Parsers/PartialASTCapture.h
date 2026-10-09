@@ -9,7 +9,9 @@
 /// keyword has committed, or where the parser recovers from a failed optional part and goes on
 /// (such a capture is reported only if the parse gets no further). It never assigns to `node` and
 /// never moves `pos`. For `SELECT` the last argument is the clause, an `ASTSelectQuery::Expression`;
-/// for `INSERT`, `CREATE` and `ALTER` it is the JSON key of the slot that failed.
+/// for `INSERT`, `CREATE` and `ALTER` it is the JSON key of the slot that failed. A parser of a part
+/// of a statement - a storage definition, an `ALTER` command - captures a fragment the same way,
+/// which the statement around it then reports in the slot of that part.
 
 #if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
 
@@ -26,6 +28,12 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
 
 /// The same for a `SELECT`, with the `Error` in the clause `slot` of the `ASTSelectQuery` `node`.
 void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos pos, ASTSelectQuery::Expression slot);
+
+/// Clones a part of a statement - a storage definition, an `ALTER` command - into
+/// `expected.partial_ast_fragment`, with the `Error` in the slot named by the JSON key
+/// `expected_what`, or, for a null key, as the last element of the `ASTExpressionList` `node`. The
+/// capture of the node around it at the same position takes the fragment in place of an `Error`.
+void snapshotPartialFragment(Expected & expected, const ASTPtr & node, IParser::Pos pos, const char * expected_what);
 
 /// Held by `ParserSelectQuery::parseImpl`: counts the `SELECT`s being parsed.
 class PartialASTSelectScope
@@ -81,9 +89,11 @@ private:
 }
 
 #define PARTIAL_AST_SNAPSHOT(expected, node, pos, what) snapshotPartialAST(expected, node, pos, what)
+#define PARTIAL_AST_FRAGMENT(expected, node, pos, what) snapshotPartialFragment(expected, node, pos, what)
 
 #else
 
 #define PARTIAL_AST_SNAPSHOT(expected, node, pos, what) ((void)0)
+#define PARTIAL_AST_FRAGMENT(expected, node, pos, what) ((void)0)
 
 #endif

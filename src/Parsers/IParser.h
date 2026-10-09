@@ -102,6 +102,11 @@ struct Expected
     size_t partial_ast_selects = 0;
     ASTPtr partial_ast_outer_with;
     size_t partial_ast_outer_with_selects = 0;
+    /// A part of a statement that failed - a storage definition, a dictionary, an `ALTER` command,
+    /// the list of commands - captured the same way, with the `max_parsed_pos` it was captured at.
+    /// The capture of the node around it at that position takes it in place of an `Error`.
+    ASTPtr partial_ast_fragment;
+    const char * partial_ast_fragment_pos = nullptr;
 #endif
 
     /// 'description' should be statically allocated string.

@@ -4,6 +4,7 @@
 #include <Parsers/ASTCreateQuery.h>
 #include <Parsers/ASTInsertQuery.h>
 #include <Parsers/ASTJSONHelpers.h>
+#include <Parsers/ASTRefreshStrategy.h>
 #include <Parsers/ASTToJSON.h>
 #include <Common/Exception.h>
 
@@ -22,8 +23,8 @@ namespace ErrorCodes
 namespace
 {
 
-/// The keys a capture site may name, per statement: each one is written only when its slot is set,
-/// and a failed slot is empty, so the `Error` is the only value the key gets.
+/// The keys a capture site may name, per node: each one is written only when its slot is set, and a
+/// failed slot is empty, so the `Error` is the only value the key gets.
 bool isPartialStatementKey(const IAST & statement, std::string_view key)
 {
     auto is_one_of = [&](std::initializer_list<std::string_view> keys)
@@ -34,9 +35,12 @@ bool isPartialStatementKey(const IAST & statement, std::string_view key)
     if (statement.as<ASTInsertQuery>())
         return is_one_of({"table", "table_function", "partition_by", "infile", "compression", "settings_ast", "format", "columns"});
     if (statement.as<ASTCreateQuery>())
-        return is_one_of({"table_ast", "cluster", "columns_list", "storage", "select", "as_table_function"});
+        return is_one_of({"table_ast", "cluster", "columns_list", "storage", "select", "as_table_function", "aliases_list",
+            "refresh_strategy", "targets", "sql_security", "comment"});
     if (statement.as<ASTAlterQuery>())
         return is_one_of({"database_ast", "table_ast", "cluster", "command_list"});
+    if (statement.as<ASTRefreshStrategy>())
+        return is_one_of({"period", "offset", "spread", "dependencies", "settings"});
     return false;
 }
 

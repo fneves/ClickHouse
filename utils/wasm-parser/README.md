@@ -120,6 +120,11 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
     `COMPRESSION`, `SETTINGS` and `FORMAT`;
   * `CREATE TABLE`: the table name, `ON CLUSTER`, the column list, the storage definition
     (`ENGINE`, `ORDER BY` and the rest), `AS SELECT` and an `AS` table function;
+  * `CREATE VIEW` and `CREATE MATERIALIZED VIEW`: the name, `ON CLUSTER`, `REFRESH` (in
+    `refresh_strategy`, each of its parts in its own key: `period`, `offset`, `spread`,
+    `dependencies`, `settings`), `TO` and `TO INNER UUID` (in `targets`), the column list and the
+    column aliases, the storage definition (in `targets`, as the `inner_engine` of the `To` target,
+    where `ast` has it), `DEFINER` and `SQL SECURITY`, `COMMENT` and `AS SELECT`;
   * `ALTER`: the database or table name, `ON CLUSTER` and the list of commands.
 * Its root is the deepest statement node that captured: the one whose failure got furthest into
   the query, and of statements nested in each other that failed at the same place, the innermost.
@@ -144,21 +149,23 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   list of where it failed, because `error` is further on: in `INSERT INTO t SELECT 1 +`, the
   `INSERT` goes on after its `SELECT`, and in `SELECT 1 UNION ALL SELECT 2 +`, the union goes on
   after its second branch, so `error` expects `end of query` and the `Error` an operator.
-* For `INSERT`, `CREATE TABLE` and `ALTER`, the slot is the key the statement's `ast` would have
+* For `INSERT`, `CREATE` and `ALTER`, the slot is the key the statement's `ast` would have
   there, even where `ast` holds a string or a structure of its own: `INSERT INTO t FORMAT` reports
   `"format": {"type": "Error", ...}`, `CREATE TABLE t (a UInt8) ENGINE =` reports `"storage"`. A
   column list that parsed and lacks its `)` has the `Error` as its last element:
-  `INSERT INTO t (a,`, and `CREATE TABLE t (a UInt8,` when the list has columns only. A list
+  `INSERT INTO t (a,`, `CREATE VIEW v (a,` (the column aliases), and `CREATE TABLE t (a UInt8,`
+  when the list has columns only. A list
   with indices, constraints, projections or a primary key does not keep the order of its
   elements, so for `CREATE TABLE t (a UInt8, INDEX i a TYPE minmax GRANULARITY 1` the `Error`
   is `columns_list` as a whole.
-* The column list of `INSERT` and the storage definition of `CREATE TABLE` are optional, and the
-  parser goes on when they fail. They are reported only when nothing after them got further, and
-  the storage definition only when the storage parser itself got past its first token:
-  `CREATE TABLE t (a UInt8) BLAH` has no `partial_ast`.
+* The column list of `INSERT`, the storage definition of `CREATE TABLE` and of a materialized
+  view, and a view's `DEFINER`, `SQL SECURITY` and `COMMENT` are optional, and the parser goes on
+  when they fail. They are reported only when nothing after them got further, and the storage
+  definition, `DEFINER`, `SQL SECURITY` and `COMMENT` only when their parser itself got past its
+  first token: `CREATE TABLE t (a UInt8) BLAH` has no `partial_ast`.
 * Not captured: a missing data source (`INSERT INTO t`), `CREATE TABLE t AS db.table` and
   `CREATE TABLE t ENGINE = MergeTree AS` (while `CREATE TABLE t (a UInt8) ENGINE = MergeTree AS`
-  reports `select`), views, dictionaries, and what parsed of a storage definition or of an
+  reports `select`), dictionaries, and what parsed of a storage definition or of an
   `ALTER` command before it failed - those are an `Error` in `storage` and `command_list` as a
   whole.
   `CREATE TABLE t (a UInt8) SETTINGS` is reported in `storage`, although the query-level

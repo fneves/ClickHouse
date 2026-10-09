@@ -457,6 +457,8 @@ ASTPtr tryParseQuery(
         diagnostics->expected.partial_ast_selects = 0;
         diagnostics->expected.partial_ast_outer_with = nullptr;
         diagnostics->expected.partial_ast_outer_with_selects = 0;
+        diagnostics->expected.partial_ast_fragment = nullptr;
+        diagnostics->expected.partial_ast_fragment_pos = nullptr;
 #endif
     }
 

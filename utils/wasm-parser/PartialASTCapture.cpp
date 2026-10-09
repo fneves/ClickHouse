@@ -5,7 +5,9 @@
 #include <Parsers/ASTCreateQuery.h>
 #include <Parsers/ASTExpressionList.h>
 #include <Parsers/ASTInsertQuery.h>
+#include <Parsers/ASTRefreshStrategy.h>
 #include <Parsers/ASTSelectQuery.h>
+#include <Parsers/ASTViewTargets.h>
 
 #include <string_view>
 #include <utility>
@@ -41,6 +43,14 @@ bool fitsPartialASTLimits(const IAST & root, const IAST * child)
     return true;
 }
 
+/// A tree that could never be an `ast` is not reported. Nothing captured before it is: that was a
+/// shallower failure, and the parse got further. Nor anything around it at this position.
+void blockCaptures(Expected & expected)
+{
+    expected.partial_ast = nullptr;
+    expected.partial_ast_pos = expected.max_parsed_pos;
+}
+
 /// The checks every capture makes before it clones anything; false if it should not be taken.
 /// `extra` is a tree that the capture adds to `node` as one more child.
 bool startCapture(Expected & expected, const ASTPtr & node, bool is_select, const IAST * extra = nullptr)
@@ -61,12 +71,9 @@ bool startCapture(Expected & expected, const ASTPtr & node, bool is_select, cons
         && (!expected.partial_ast || !is_select || expected.partial_ast->as<ASTSelectQuery>()))
         return false;
 
-    /// A tree that could never be an `ast` is not reported either. Nothing captured before it is: that
-    /// was a shallower failure, and the parse got further. Nor anything around it at this position.
     if (!fitsPartialASTLimits(*node, extra))
     {
-        expected.partial_ast = nullptr;
-        expected.partial_ast_pos = expected.max_parsed_pos;
+        blockCaptures(expected);
         return false;
     }
 
@@ -97,6 +104,45 @@ void storeCapture(Expected & expected, ASTPtr partial)
 {
     expected.partial_ast = std::move(partial);
     expected.partial_ast_pos = expected.max_parsed_pos;
+}
+
+/// The node a fragment is a part of: the node of an `ASTPartialStatement`, or the list itself.
+const IAST & fragmentNode(const IAST & fragment)
+{
+    if (const auto * wrapper = fragment.as<ASTPartialStatement>())
+        return *wrapper->statement;
+    return fragment;
+}
+
+/// Whether a fragment fills the slot `key` of `parent`, or, for a null key, is an element of the list
+/// `parent`.
+bool fillsSlot(const IAST & parent, const char * key, const IAST & fragment)
+{
+    const IAST & node = fragmentNode(fragment);
+    const std::string_view slot = key ? key : "";
+    if (parent.as<ASTCreateQuery>())
+        return slot == "refresh_strategy" && node.as<ASTRefreshStrategy>();
+    return false;
+}
+
+/// What goes into the slot that failed: the fragment captured inside it at this position, if any, and
+/// otherwise a new `Error`. A fragment is taken once.
+ASTPtr takeFragment(Expected & expected, const IAST & parent, const char * key)
+{
+    if (expected.partial_ast_fragment && expected.partial_ast_fragment_pos == expected.max_parsed_pos
+        && fillsSlot(parent, key, *expected.partial_ast_fragment))
+        return std::exchange(expected.partial_ast_fragment, nullptr);
+    return nullptr;
+}
+
+ASTPtr wrap(ASTPtr node, ASTPtr inner, const char * key)
+{
+    auto wrapper = make_intrusive<ASTPartialStatement>();
+    wrapper->statement = std::move(node);
+    wrapper->error = std::move(inner);
+    wrapper->key = key;
+    wrapper->children = {wrapper->statement, wrapper->error};
+    return wrapper;
 }
 
 /// Whether the list of a `CREATE TABLE` holds columns only, so that what failed after it is the
@@ -136,10 +182,14 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
 
 void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos pos, const char * expected_what)
 {
-    if (!startCapture(expected, node, /*is_select=*/ false))
+    if (!node)
         return;
 
-    auto error = makeError(expected, pos);
+    ASTPtr fragment = takeFragment(expected, *node, expected_what);
+    if (!startCapture(expected, node, /*is_select=*/ false, fragment.get()))
+        return;
+
+    ASTPtr inner = fragment ? fragment : makeError(expected, pos);
     ASTPtr partial = node->clone();
     const std::string_view what = expected_what;
     auto * insert = partial->as<ASTInsertQuery>();
@@ -147,7 +197,14 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
     if (insert && what == "columns" && insert->columns && insert->columns->as<ASTExpressionList>())
     {
         /// The list parsed and its `)` is missing: what failed is the element after the last one.
-        insert->columns->children.push_back(error);
+        insert->columns->children.push_back(inner);
+        storeCapture(expected, std::move(partial));
+        return;
+    }
+
+    if (create && what == "aliases_list" && create->aliases_list)
+    {
+        create->aliases_list->children.push_back(inner);
         storeCapture(expected, std::move(partial));
         return;
     }
@@ -159,19 +216,57 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
         /// from one before it.
         if (hasOnlyColumns(*create->columns_list))
         {
-            create->columns_list->columns->children.push_back(error);
+            create->columns_list->columns->children.push_back(inner);
             storeCapture(expected, std::move(partial));
             return;
         }
         create->reset(create->columns_list);
     }
 
-    auto wrapper = make_intrusive<ASTPartialStatement>();
-    wrapper->statement = std::move(partial);
-    wrapper->error = error;
-    wrapper->key = expected_what;
-    wrapper->children = {wrapper->statement, wrapper->error};
-    storeCapture(expected, std::move(wrapper));
+    if (create && what == "inner_engine")
+    {
+        /// The storage of a materialized view, which `ast` has as the inner engine of its `TO` target.
+        if (!create->targets)
+            create->set(create->targets, make_intrusive<ASTViewTargets>());
+        create->targets->setInnerEngine(ViewTarget::To, inner);
+        storeCapture(expected, std::move(partial));
+        return;
+    }
+
+    storeCapture(expected, wrap(std::move(partial), std::move(inner), expected_what));
+}
+
+void snapshotPartialFragment(Expected & expected, const ASTPtr & node, IParser::Pos pos, const char * expected_what)
+{
+    if (!expected.enable_partial_ast_capture || !node)
+        return;
+
+    /// Nothing around a statement captured at this position or further is taken, so no part of it is.
+    if (expected.partial_ast_pos && expected.max_parsed_pos <= expected.partial_ast_pos)
+        return;
+
+    ASTPtr inner = takeFragment(expected, *node, expected_what);
+
+    /// An empty list with nothing in it that captured is not a part: the slot of the list is what failed.
+    if (!expected_what && !inner && node->children.empty())
+        return;
+
+    if (!fitsPartialASTLimits(*node, inner.get()))
+    {
+        blockCaptures(expected);
+        return;
+    }
+
+    if (!inner)
+        inner = makeError(expected, pos);
+    ASTPtr partial = node->clone();
+    if (expected_what)
+        partial = wrap(std::move(partial), std::move(inner), expected_what);
+    else
+        partial->children.push_back(std::move(inner));
+
+    expected.partial_ast_fragment = std::move(partial);
+    expected.partial_ast_fragment_pos = expected.max_parsed_pos;
 }
 
 }

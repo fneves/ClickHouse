@@ -40,13 +40,15 @@ public:
     void setOffsets(const char * query_begin);
 };
 
-/** A captured `INSERT`, `CREATE` or `ALTER` with the `Error` kept beside it rather than inside it.
+/** A captured `INSERT`, `CREATE` or `ALTER`, or a captured part of one (a storage definition, an
+  * `ALTER` command), with the `Error` kept beside it rather than inside it.
   *
   * The slot that failed is often a typed member (`ASTCreateQuery::columns_list` is an `ASTColumns`)
   * or a string (`ASTInsertQuery::format`), so it cannot hold an `Error`, and these nodes do not
-  * serialize `children`. `writeJSON` therefore writes the statement and adds `"<key>": <Error>` to
-  * its object, which is how a consumer sees it: as the value of the key that failed. Only keys that
-  * the statement leaves out when the slot is empty are accepted, so the key never appears twice.
+  * serialize `children`. `writeJSON` therefore writes the node and adds `"<key>": <error>` to its
+  * object, which is how a consumer sees it: as the value of the key that failed. `error` is the
+  * `Error`, or the captured part that failed in that slot, which holds the `Error` in turn. Only keys
+  * that the node leaves out when the slot is empty are accepted, so the key never appears twice.
   */
 class ASTPartialStatement : public IAST
 {

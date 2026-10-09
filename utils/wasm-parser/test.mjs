@@ -468,6 +468,34 @@ if (hasAstJson) {
         ['CREATE TABLE t AS remote(', null],
         ['CREATE TABLE t ENGINE = MergeTree AS', null],
 
+        ['CREATE VIEW', 'CreateQuery', 'table_ast', 11, 11],
+        ['CREATE VIEW v ON CLUSTER', 'CreateQuery', 'cluster', 24, 24],
+        ['CREATE VIEW v', 'CreateQuery', 'select', 13, 13],
+        ['CREATE VIEW v AS', 'CreateQuery', 'select', 16, 16],
+        ['CREATE VIEW v AS SELECT a FROM', 'SelectQuery', 'tables', 30, 30],
+        /// The column aliases, and the columns, as a list that lacks its `)`.
+        ['CREATE VIEW v (a,', 'CreateQuery', 'aliases_list.children[1]', 17, 17],
+        ['CREATE VIEW v (a Int64) (', 'CreateQuery', 'aliases_list', 25, 25],
+        ['CREATE VIEW v (a Int64,', 'CreateQuery', 'columns_list.columns.children[1]', 23, 23],
+        /// `REFRESH` is for a materialized view only; its parts are each in their own key.
+        ['CREATE VIEW v REFRESH EVERY 1 HOUR', 'CreateQuery', 'refresh_strategy', 14, 14],
+        ['CREATE MATERIALIZED VIEW v REFRESH', 'CreateQuery', 'refresh_strategy', 34, 34],
+        ['CREATE MATERIALIZED VIEW v REFRESH EVERY', 'CreateQuery', 'refresh_strategy.period', 40, 40],
+        ['CREATE MATERIALIZED VIEW v REFRESH EVERY 1 HOUR OFFSET', 'CreateQuery', 'refresh_strategy.offset', 54, 54],
+        ['CREATE MATERIALIZED VIEW v REFRESH AFTER 1 HOUR RANDOMIZE FOR', 'CreateQuery', 'refresh_strategy.spread', 61, 61],
+        ['CREATE MATERIALIZED VIEW v REFRESH AFTER 1 HOUR DEPENDS ON', 'CreateQuery', 'refresh_strategy.dependencies', 58, 58],
+        ['CREATE MATERIALIZED VIEW v REFRESH AFTER 1 HOUR SETTINGS', 'CreateQuery', 'refresh_strategy.settings', 56, 56],
+        ['CREATE MATERIALIZED VIEW v TO', 'CreateQuery', 'targets', 29, 29],
+        ['CREATE MATERIALIZED VIEW v TO INNER UUID', 'CreateQuery', 'targets', 40, 40],
+        ['CREATE MATERIALIZED VIEW v TO t', 'CreateQuery', 'select', 31, 31],
+        /// The storage of a materialized view is the inner engine of its `To` target, as in `ast`.
+        ['CREATE MATERIALIZED VIEW v ENGINE =', 'CreateQuery', 'targets.targets[0].inner_engine', 35, 35],
+        ['CREATE MATERIALIZED VIEW v ENGINE = Memory POPULATE', 'CreateQuery', 'select', 51, 51],
+        /// Optional parts, captured when their parser got past its first token.
+        ['CREATE VIEW v COMMENT', 'CreateQuery', 'comment', 21, 21],
+        ['CREATE VIEW v (a) DEFINER =', 'CreateQuery', 'sql_security', 27, 27],
+        ['CREATE VIEW v (a) SQL SECURITY', 'CreateQuery', 'sql_security', 30, 30],
+
         ['ALTER TABLE', 'AlterQuery', 'table_ast', 11, 11],
         ['ALTER TABLE db.', 'AlterQuery', 'table_ast', 15, 15],
         ['ALTER TABLE t', 'AlterQuery', 'command_list', 13, 13],
@@ -505,24 +533,33 @@ if (hasAstJson) {
         const subquery = parsed('SELECT * FROM (SELECT a FROM').doc?.partial_ast;
         check('...and of a subquery, its own select list', subquery?.select?.children?.[0]?.name === 'a');
 
-        /// Members the success path sets at the end are there as in the "ast" of the whole statement.
+        /// Members the success path sets at the end are there as in the "ast" of the whole statement,
+        /// and so are the parts of a clause that failed, by their path.
+        const at = (tree, path) => path.split('.').reduce((v, k) => v?.[k], tree);
         for (const [prefix, rest, keys] of [
             ["CREATE TABLE t UUID '123e4567-e89b-12d3-a456-426614174000' (a UInt8) ENGINE =", ' MergeTree ORDER BY a',
                 ['uuid', 'has_uuid', 'has_uuid_clause']],
             ["CREATE TABLE t (a UInt8) ENGINE = MergeTree ORDER BY a COMMENT 'x' AS", ' SELECT 1', ['comment']],
             ['SELECT DISTINCT ON (a) b FROM', ' t', ['limit_by', 'limit_by_length']],
+            ['CREATE MATERIALIZED VIEW v TO db.t', ' AS SELECT 1', ['table_ast', 'targets', 'is_materialized_view']],
+            ['CREATE MATERIALIZED VIEW v ENGINE = Memory POPULATE', ' AS SELECT 1', ['targets', 'is_populate']],
+            ["CREATE VIEW v (a Int64) (a) DEFINER = u SQL SECURITY DEFINER COMMENT 'c' AS", ' SELECT 1',
+                ['columns_list', 'aliases_list', 'sql_security', 'comment', 'is_ordinary_view']],
+            ['CREATE MATERIALIZED VIEW v REFRESH EVERY 1 HOUR OFFSET', ' 5 MINUTE AS SELECT 1',
+                ['refresh_strategy.schedule_kind', 'refresh_strategy.period']],
+            ['CREATE MATERIALIZED VIEW v REFRESH AFTER 1 HOUR RANDOMIZE FOR 1 MINUTE DEPENDS ON a SETTINGS', ' x = 1 AS SELECT 1',
+                ['refresh_strategy.period', 'refresh_strategy.spread', 'refresh_strategy.dependencies']],
         ]) {
             const partial = parsed(prefix).doc?.partial_ast;
             let ast = parsed(prefix + rest).doc?.ast;
             if (ast?.type === 'SelectWithUnionQuery')
                 ast = ast.list_of_selects.children[0];
             check(`...with ${keys.join(', ')} as in the ast of the whole statement: ${prefix.slice(0, 40)}`,
-                keys.every(k => partial?.[k] !== undefined && JSON.stringify(partial[k]) === JSON.stringify(ast?.[k])));
+                keys.every(k => at(partial, k) !== undefined && JSON.stringify(at(partial, k)) === JSON.stringify(at(ast, k))));
         }
 
         /// A `WITH` written before `INSERT` is in each `SELECT` of the union of the `INSERT`, as in the
         /// "ast" of the whole statement, and not in a `SELECT` nested in one of them.
-        const at = (tree, path) => path.split('.').reduce((v, k) => v?.[k], tree);
         const outer = 'WITH c AS (SELECT 1) INSERT INTO t';
         const union = 'select.list_of_selects.children';
         for (const [prefix, rest, path, hasWith] of [

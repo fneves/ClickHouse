@@ -503,6 +503,8 @@ if (hasAstJson) {
         ['CREATE MATERIALIZED VIEW v REFRESH AFTER 1 HOUR RANDOMIZE FOR', 'CreateQuery', 'refresh_strategy.spread', 61, 61],
         ['CREATE MATERIALIZED VIEW v REFRESH AFTER 1 HOUR DEPENDS ON', 'CreateQuery', 'refresh_strategy.dependencies', 58, 58],
         ['CREATE MATERIALIZED VIEW v REFRESH AFTER 1 HOUR SETTINGS', 'CreateQuery', 'refresh_strategy.settings', 56, 56],
+        /// With no schedule, `DEPENDS ON` is what is missing; the spread that parsed is kept.
+        ['CREATE MATERIALIZED VIEW v REFRESH RANDOMIZE FOR 1 SECOND', 'CreateQuery', 'refresh_strategy.dependencies', 57, 57],
         ['CREATE MATERIALIZED VIEW v TO', 'CreateQuery', 'targets', 29, 29],
         ['CREATE MATERIALIZED VIEW v TO INNER UUID', 'CreateQuery', 'targets', 40, 40],
         ['CREATE MATERIALIZED VIEW v TO t', 'CreateQuery', 'select', 31, 31],
@@ -639,6 +641,7 @@ if (hasAstJson) {
             ['CREATE TABLE t AS db.', 'other', ['as_database']],
             /// A `TimeSeries` table is one from its engine on, also when its storage definition failed.
             [`${T} ENGINE = TimeSeries ORDER BY`, ' a', ['is_time_series_table', 'storage.engine']],
+            ['CREATE MATERIALIZED VIEW v REFRESH RANDOMIZE FOR 1 SECOND', ' DEPENDS ON x AS SELECT 1', ['refresh_strategy.spread']],
         ]) {
             const partial = parsed(prefix).doc?.partial_ast;
             let ast = parsed(prefix + rest).doc?.ast;

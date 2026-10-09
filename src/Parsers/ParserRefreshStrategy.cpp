@@ -101,7 +101,11 @@ bool ParserRefreshStrategy::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
     if (refresh->schedule_kind == RefreshScheduleKind::UNKNOWN)
     {
         if (!refresh->dependencies)
+        {
+            /// After `RANDOMIZE FOR`, which parsed, `DEPENDS ON` is what is missing.
+            PARTIAL_AST_FRAGMENT(expected, refresh->spread ? ASTPtr(refresh) : nullptr, pos, "dependencies");
             return false;
+        }
 
         /// `REFRESH DEPENDS ON` is a shorthand for `REFRESH AFTER 0 SECOND DEPENDS ON`.
         refresh->schedule_kind = RefreshScheduleKind::AFTER;

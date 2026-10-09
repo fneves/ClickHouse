@@ -124,7 +124,9 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   it. The clauses that parsed before the failure are there as in `ast`.
 * The slot that failed holds an `Error` node instead of a clause: `begin` and `end` are byte
   offsets of where the parser stopped, the rightmost position it recorded what it `expected`
-  there - the same list as in `error`. A broken expression is one `Error` in its clause. That
+  there - the same list as in `error`. (A `SELECT` failed inside an `INSERT` or `CREATE` that went
+  on past it, `INSERT INTO t SELECT 1 +`, keeps the list from where it failed, because `error` is
+  further on.) A broken expression is one `Error` in its clause. That
   position can precede `error.begin`: for `SELECT 1 +`, the `Error` covers the `+`, while the
   error token is the end of the input.
 * For `INSERT`, `CREATE TABLE` and `ALTER`, the slot is the key the statement's `ast` would have

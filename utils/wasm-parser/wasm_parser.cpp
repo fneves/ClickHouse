@@ -494,7 +494,14 @@ int ch_parse(const char * query, uint32_t size)
                 DB::IAST * current = nodes.back();
                 nodes.pop_back();
                 if (auto * error_node = current->as<DB::ASTError>())
+                {
                     error_node->setOffsets(query);
+                    /// At the position the parse ended at, the list is the one in "error", which may
+                    /// have grown since the capture. A `SELECT` captured before the parse went on keeps
+                    /// what was expected where it failed.
+                    if (error_node->begin_pos == diagnostics.expected.max_parsed_pos)
+                        error_node->expected.assign(diagnostics.expected.variants.begin(), diagnostics.expected.variants.end());
+                }
                 for (const auto & child : current->children)
                     nodes.push_back(child.get());
             }

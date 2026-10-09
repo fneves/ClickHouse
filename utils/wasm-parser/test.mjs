@@ -472,6 +472,8 @@ if (hasAstJson) {
         check(`${sql}: fails with a partial ${type}, an Error in "${path}" at [${begin}, ${end})`, same
             && partial?.type === type && errors.length === 1 && errors[0].path === path
             && errors[0].node.begin === begin && errors[0].node.end === end && !hasDuplicateKeys(raw.out));
+        /// The parse can add to what it expects after the capture: `end of query` after `INSERT ... SELECT`.
+        check('...expecting what "error" expects', JSON.stringify(errors[0]?.node.expected) === JSON.stringify(r.doc.error.expected ?? []));
     }
 
     if (hasAstJson) {

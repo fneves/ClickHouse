@@ -78,6 +78,8 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
         ++pos;
     error->end_pos = pos->begin == error->begin_pos ? pos->end : error->begin_pos;
 
+    /// What is expected so far. The parse can add to it at this position later - `end of query`, for
+    /// one - so `ch_parse` takes the final list instead when the error is still here.
     for (const char * variant : expected.variants)
         error->expected.emplace_back(variant);
 

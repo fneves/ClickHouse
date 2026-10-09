@@ -672,8 +672,10 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         auto partial = make_intrusive<ASTStorage>();
         if (engine)
         {
-            auto engine_kind_set = engine->clone();
-            engine_kind_set->as<ASTFunction &>().setKind(
+            /// A copy of the node alone, sharing its arguments: the capture measures the tree before it
+            /// clones it, and a deep clone here would come first.
+            auto engine_kind_set = make_intrusive<ASTFunction>(engine->as<ASTFunction &>());
+            engine_kind_set->setKind(
                 engine_kind == EngineKind::TABLE_ENGINE ? ASTFunction::Kind::TABLE_ENGINE : ASTFunction::Kind::DATABASE_ENGINE);
             partial->set(partial->engine, engine_kind_set);
         }

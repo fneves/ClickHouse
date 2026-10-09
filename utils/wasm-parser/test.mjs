@@ -769,6 +769,14 @@ console.log(`\n--- with a ${WORKER_STACK_MB} MB engine stack ---`);
         ['a DEFAULT of 5000 terms, then ENGINE =', `CREATE TABLE t (a UInt8 DEFAULT ${terms(5000)}) ENGINE =`],
         ['INSERT ... SELECT with a WHERE of 3000 terms, then GROUP BY', `INSERT INTO t SELECT 1 WHERE ${terms(3000)} GROUP BY`],
         ['INSERT ... SELECT of 3000 terms, then FORMAT', `INSERT INTO t SELECT ${terms(3000)} FORMAT`],
+        /// The engine of a storage definition that failed is measured before anything copies it.
+        ['engine arguments of 5000 terms, then ORDER BY', `CREATE TABLE t (a UInt8) ENGINE = MergeTree(${terms(5000)}) ORDER BY`],
+        ['engine arguments of 5000 terms, then SETTINGS', `CREATE TABLE t (a UInt8) ENGINE = MergeTree(${terms(5000)}) SETTINGS`],
+        ['view engine arguments of 5000 terms, then ORDER BY',
+            `CREATE MATERIALIZED VIEW v ENGINE = MergeTree(${terms(5000)}) ORDER BY`],
+        ['database engine arguments of 5000 terms, then SETTINGS', `CREATE DATABASE d ENGINE = Replicated(${terms(5000)}) SETTINGS`],
+        ['INSERT SETTINGS with an array nested 900 levels, then FORMAT after SELECT ... SETTINGS',
+            `INSERT INTO t SETTINGS a = ${'['.repeat(900)}1${']'.repeat(900)} SELECT 1 SETTINGS b = 1 FORMAT`],
     ];
     for (const [name, sql] of failing) {
         const r = await inWorker('ch_parse', sql);

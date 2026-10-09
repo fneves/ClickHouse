@@ -2,6 +2,7 @@
 
 #include <ASTError.h>
 
+#include <Parsers/ASTAlterQuery.h>
 #include <Parsers/ASTCreateQuery.h>
 #include <Parsers/ASTDictionary.h>
 #include <Parsers/ASTExpressionList.h>
@@ -126,6 +127,12 @@ bool fillsSlot(const IAST & parent, const char * key, const IAST & fragment)
     if (parent.as<ASTCreateQuery>())
         return (slot == "refresh_strategy" && node.as<ASTRefreshStrategy>()) || (slot == "dictionary" && node.as<ASTDictionary>())
             || ((slot == "storage" || slot == "inner_engine") && node.as<ASTStorage>());
+    if (parent.as<ASTAlterQuery>())
+        return slot == "command_list" && node.as<ASTExpressionList>();
+    if (parent.as<ASTExpressionList>())
+        return !key && node.as<ASTAlterCommand>();
+    if (parent.as<ASTAlterCommand>())
+        return slot == "refresh" && node.as<ASTRefreshStrategy>();
     return false;
 }
 
@@ -161,6 +168,41 @@ void resetSlot(IAST & node, std::string_view key)
             clear(storage->ttl_table);
         else if (key == "settings")
             clear(storage->settings);
+    }
+    else if (auto * command = node.as<ASTAlterCommand>())
+    {
+        static const std::pair<std::string_view, IAST * ASTAlterCommand::*> members[] = {
+            {"col_decl", &ASTAlterCommand::col_decl}, {"column", &ASTAlterCommand::column},
+            {"order_by", &ASTAlterCommand::order_by}, {"sample_by", &ASTAlterCommand::sample_by},
+            {"index_decl", &ASTAlterCommand::index_decl}, {"index", &ASTAlterCommand::index},
+            {"constraint_decl", &ASTAlterCommand::constraint_decl}, {"constraint", &ASTAlterCommand::constraint},
+            {"projection_decl", &ASTAlterCommand::projection_decl}, {"projection", &ASTAlterCommand::projection},
+            {"statistics_decl", &ASTAlterCommand::statistics_decl}, {"partition", &ASTAlterCommand::partition},
+            {"partitions", &ASTAlterCommand::partitions}, {"predicate", &ASTAlterCommand::predicate},
+            {"update_assignments", &ASTAlterCommand::update_assignments}, {"comment", &ASTAlterCommand::comment},
+            {"ttl", &ASTAlterCommand::ttl}, {"settings_changes", &ASTAlterCommand::settings_changes},
+            {"settings_resets", &ASTAlterCommand::settings_resets}, {"select", &ASTAlterCommand::select},
+            {"sql_security", &ASTAlterCommand::sql_security}, {"rename_to", &ASTAlterCommand::rename_to},
+            {"refresh", &ASTAlterCommand::refresh}, {"snapshot_desc", &ASTAlterCommand::snapshot_desc},
+            {"execute_args", &ASTAlterCommand::execute_args}};
+        static const std::pair<std::string_view, String ASTAlterCommand::*> strings[] = {
+            {"move_destination_name", &ASTAlterCommand::move_destination_name}, {"from", &ASTAlterCommand::from},
+            {"with_name", &ASTAlterCommand::with_name}, {"from_table", &ASTAlterCommand::from_table},
+            {"to_table", &ASTAlterCommand::to_table}, {"snapshot_name", &ASTAlterCommand::snapshot_name},
+            {"execute_command_name", &ASTAlterCommand::execute_command_name},
+            {"remove_property", &ASTAlterCommand::remove_property}};
+        for (const auto & [name, member] : members)
+            if (name == key)
+                clear(command->*member);
+        for (const auto & [name, member] : strings)
+            if (name == key)
+                (command->*member).clear();
+        if (key == "add_enum_values" && command->add_enum_values)
+        {
+            IAST * values = command->add_enum_values.get();
+            clear(values);
+            command->add_enum_values = nullptr;
+        }
     }
     else if (auto * dictionary = node.as<ASTDictionary>())
     {

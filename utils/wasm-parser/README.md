@@ -130,7 +130,14 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
     definition in its own key of `dictionary` (`primary_key`, `source`, `lifetime`, `layout`,
     `range`, `dict_settings`) and `COMMENT`. A clause whose `)` is missing is an `Error` in its key,
     except `PRIMARY KEY (a, b`, a list, which has the `Error` as its last element;
-  * `ALTER`: the database or table name, `ON CLUSTER` and the list of commands.
+  * `ALTER`: the database or table name, `ON CLUSTER` and the list of commands. `command_list`
+    has the commands that parsed, then the one that failed, with its `command_type`, its flags
+    (`part`, `detach`, `clear_column` and the like) and what parsed of it, and the `Error` in the
+    key of the part that failed: `ALTER TABLE t DROP COLUMN a, MODIFY COLUMN b REMOVE` reports
+    `remove_property`, `ALTER TABLE t ATTACH PARTITION 1 FROM` reports `from_table`,
+    `ALTER TABLE t MODIFY REFRESH EVERY` reports `refresh.period`. A command that does not start
+    with a command keyword is an `Error` after the ones before it (`ALTER TABLE t DROP COLUMN a,`),
+    or `command_list` as a whole when there are none (`ALTER TABLE t`).
 * Its root is the deepest statement node that captured: the one whose failure got furthest into
   the query, and of statements nested in each other that failed at the same place, the innermost.
   `SELECT * FROM (SELECT a FROM` reports the subquery, `INSERT INTO t SELECT a FROM` the
@@ -172,8 +179,7 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   first token: `CREATE TABLE t (a UInt8) BLAH` has no `partial_ast`.
 * Not captured: a missing data source (`INSERT INTO t`), `CREATE TABLE t AS db.table` and
   `CREATE TABLE t ENGINE = MergeTree AS` (while `CREATE TABLE t (a UInt8) ENGINE = MergeTree AS`
-  reports `select`), and what parsed of an `ALTER` command before it failed - that is an `Error`
-  in `command_list` as a whole.
+  reports `select`).
   `CREATE TABLE t (a UInt8) SETTINGS` is reported in `storage.settings`, although the query-level
   `SETTINGS` fails on the same token.
 * A partial tree is held to the node limits of an `ast`, 1000 levels and 50000 nodes. One past

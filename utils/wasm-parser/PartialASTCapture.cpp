@@ -3,6 +3,7 @@
 #include <ASTError.h>
 
 #include <Parsers/ASTCreateQuery.h>
+#include <Parsers/ASTDictionary.h>
 #include <Parsers/ASTExpressionList.h>
 #include <Parsers/ASTInsertQuery.h>
 #include <Parsers/ASTRefreshStrategy.h>
@@ -121,8 +122,30 @@ bool fillsSlot(const IAST & parent, const char * key, const IAST & fragment)
     const IAST & node = fragmentNode(fragment);
     const std::string_view slot = key ? key : "";
     if (parent.as<ASTCreateQuery>())
-        return slot == "refresh_strategy" && node.as<ASTRefreshStrategy>();
+        return (slot == "refresh_strategy" && node.as<ASTRefreshStrategy>()) || (slot == "dictionary" && node.as<ASTDictionary>());
     return false;
+}
+
+/// Empties the slot `key` of a part of a statement, which a failure after the slot parsed - a missing
+/// `)` - leaves set: the `Error` takes the place of what parsed there, as it does of a broken
+/// expression, and the key is written once.
+void resetSlot(IAST & node, std::string_view key)
+{
+    if (auto * dictionary = node.as<ASTDictionary>())
+    {
+        if (key == "primary_key")
+            dictionary->reset(dictionary->primary_key);
+        else if (key == "source")
+            dictionary->reset(dictionary->source);
+        else if (key == "lifetime")
+            dictionary->reset(dictionary->lifetime);
+        else if (key == "layout")
+            dictionary->reset(dictionary->layout);
+        else if (key == "range")
+            dictionary->reset(dictionary->range);
+        else if (key == "dict_settings")
+            dictionary->reset(dictionary->dict_settings);
+    }
 }
 
 /// What goes into the slot that failed: the fragment captured inside it at this position, if any, and
@@ -209,6 +232,13 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
         return;
     }
 
+    if (create && what == "dictionary_attributes_list" && create->dictionary_attributes_list)
+    {
+        create->dictionary_attributes_list->children.push_back(inner);
+        storeCapture(expected, std::move(partial));
+        return;
+    }
+
     if (create && what == "columns_list" && create->columns_list)
     {
         /// Likewise for `CREATE TABLE t (a UInt8,`. Otherwise the whole list is what failed, and the
@@ -260,10 +290,21 @@ void snapshotPartialFragment(Expected & expected, const ASTPtr & node, IParser::
     if (!inner)
         inner = makeError(expected, pos);
     ASTPtr partial = node->clone();
-    if (expected_what)
-        partial = wrap(std::move(partial), std::move(inner), expected_what);
-    else
+    auto * dictionary = partial->as<ASTDictionary>();
+    if (!expected_what)
+    {
         partial->children.push_back(std::move(inner));
+    }
+    else if (dictionary && std::string_view(expected_what) == "primary_key" && dictionary->primary_key)
+    {
+        /// `PRIMARY KEY (a, b` lacks its `)`: what failed is the element after the last one.
+        dictionary->primary_key->children.push_back(std::move(inner));
+    }
+    else
+    {
+        resetSlot(*partial, expected_what);
+        partial = wrap(std::move(partial), std::move(inner), expected_what);
+    }
 
     expected.partial_ast_fragment = std::move(partial);
     expected.partial_ast_fragment_pos = expected.max_parsed_pos;

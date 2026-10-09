@@ -496,6 +496,22 @@ if (hasAstJson) {
         ['CREATE VIEW v (a) DEFINER =', 'CreateQuery', 'sql_security', 27, 27],
         ['CREATE VIEW v (a) SQL SECURITY', 'CreateQuery', 'sql_security', 30, 30],
 
+        ['CREATE DICTIONARY', 'CreateQuery', 'table_ast', 17, 17],
+        ['CREATE DICTIONARY d ON CLUSTER', 'CreateQuery', 'cluster', 30, 30],
+        ['CREATE DICTIONARY d', 'CreateQuery', 'dictionary_attributes_list', 19, 19],
+        ['CREATE DICTIONARY d (a UInt8,', 'CreateQuery', 'dictionary_attributes_list.children[1]', 29, 29],
+        ['CREATE DICTIONARY d (a UInt8 DEFAULT', 'CreateQuery', 'dictionary_attributes_list', 36, 36],
+        /// Each clause of the definition is its own key of `dictionary`; a broken one is an `Error` there.
+        ['CREATE DICTIONARY d (a UInt8) PRIMARY KEY', 'CreateQuery', 'dictionary.primary_key', 41, 41],
+        ['CREATE DICTIONARY d (a UInt8) PRIMARY KEY (a,', 'CreateQuery', 'dictionary.primary_key.children[1]', 45, 45],
+        ['CREATE DICTIONARY d (a UInt8) PRIMARY KEY a SOURCE(', 'CreateQuery', 'dictionary.source', 51, 51],
+        ['CREATE DICTIONARY d (a UInt8) PRIMARY KEY a SOURCE(NULL()', 'CreateQuery', 'dictionary.source', 57, 57],
+        ['CREATE DICTIONARY d (a UInt8) PRIMARY KEY a LAYOUT(', 'CreateQuery', 'dictionary.layout', 51, 51],
+        ['CREATE DICTIONARY d (a UInt8) PRIMARY KEY a LIFETIME(MIN 1', 'CreateQuery', 'dictionary.lifetime', 58, 58],
+        ['CREATE DICTIONARY d (a UInt8) PRIMARY KEY a RANGE(', 'CreateQuery', 'dictionary.range', 50, 50],
+        ['CREATE DICTIONARY d (a UInt8) PRIMARY KEY a SETTINGS(', 'CreateQuery', 'dictionary.dict_settings', 53, 53],
+        ['CREATE DICTIONARY d (a UInt8) PRIMARY KEY a LIFETIME(0) COMMENT', 'CreateQuery', 'comment', 63, 63],
+
         ['ALTER TABLE', 'AlterQuery', 'table_ast', 11, 11],
         ['ALTER TABLE db.', 'AlterQuery', 'table_ast', 15, 15],
         ['ALTER TABLE t', 'AlterQuery', 'command_list', 13, 13],
@@ -549,6 +565,9 @@ if (hasAstJson) {
                 ['refresh_strategy.schedule_kind', 'refresh_strategy.period']],
             ['CREATE MATERIALIZED VIEW v REFRESH AFTER 1 HOUR RANDOMIZE FOR 1 MINUTE DEPENDS ON a SETTINGS', ' x = 1 AS SELECT 1',
                 ['refresh_strategy.period', 'refresh_strategy.spread', 'refresh_strategy.dependencies']],
+            ['CREATE DICTIONARY db.d ON CLUSTER c (a UInt8, b String DEFAULT \'x\') PRIMARY KEY a SOURCE(NULL()) LAYOUT(FLAT()) RANGE(',
+                'MIN a MAX a) LIFETIME(0)', ['table_ast', 'cluster', 'is_dictionary', 'dictionary_attributes_list',
+                    'dictionary.primary_key', 'dictionary.source', 'dictionary.layout']],
         ]) {
             const partial = parsed(prefix).doc?.partial_ast;
             let ast = parsed(prefix + rest).doc?.ast;

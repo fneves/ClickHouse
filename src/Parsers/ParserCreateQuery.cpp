@@ -2078,6 +2078,43 @@ bool ParserCreateDictionaryQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, E
 
     bool attach = false;
 
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    /// Declared further down, after the first capture site; it points there once declared.
+    const ASTPtr * comment_so_far = nullptr;
+
+    /// The parts stay in the locals above until the whole query has parsed, so the tree a failure
+    /// captures is assembled from them, the way the success path assembles it; see
+    /// `Parsers/PartialASTCapture.h`.
+    auto tree_so_far = [&]() -> ASTPtr
+    {
+        auto partial = make_intrusive<ASTCreateQuery>();
+        partial->is_dictionary = true;
+        partial->attach = attach;
+        partial->create_or_replace = or_replace;
+        partial->replace_table = replace;
+        partial->if_not_exists = if_not_exists;
+        partial->cluster = cluster_str;
+        if (name)
+        {
+            const auto & dict_id = name->as<ASTTableIdentifier &>();
+            partial->database = dict_id.getDatabase();
+            partial->table = dict_id.getTable();
+            partial->uuid = dict_id.uuid;
+            partial->has_uuid = dict_id.uuid != UUIDHelpers::Nil;
+            partial->has_uuid_clause = dict_id.has_uuid;
+            if (partial->database)
+                partial->children.push_back(partial->database);
+            if (partial->table)
+                partial->children.push_back(partial->table);
+        }
+        partial->set(partial->dictionary_attributes_list, attributes);
+        partial->set(partial->dictionary, dictionary);
+        if (comment_so_far && *comment_so_far)
+            partial->set(partial->comment, *comment_so_far);
+        return partial;
+    };
+#endif
+
     if (s_create.ignore(pos, expected))
     {
         if (s_or_replace.ignore(pos, expected))
@@ -2100,34 +2137,62 @@ bool ParserCreateDictionaryQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, E
         if_not_exists = true;
 
     if (!dict_name_p.parse(pos, name, expected))
+    {
+        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "table_ast");
         return false;
+    }
 
     if (s_on.ignore(pos, expected))
     {
         if (!ASTQueryWithOnCluster::parse(pos, cluster_str, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "cluster");
             return false;
+        }
     }
 
     if (!attach)
     {
         if (!s_left_paren.ignore(pos, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "dictionary_attributes_list");
             return false;
+        }
 
         if (!attributes_p.parse(pos, attributes, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "dictionary_attributes_list");
             return false;
+        }
 
         /// We allow a trailing comma in the columns list for user convenience.
         /// Although it diverges from the SQL standard slightly.
         s_comma.ignore(pos, expected);
 
         if (!s_right_paren.ignore(pos, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "dictionary_attributes_list");
             return false;
+        }
 
         if (!dictionary_p.parse(pos, dictionary, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "dictionary");
             return false;
+        }
     }
 
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    const char * max_before_comment = expected.max_parsed_pos;
+#endif
     auto comment = parseComment(pos, expected);
+#if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+    comment_so_far = &comment;
+#endif
+    /// Optional, so the parse goes on; captured only if the comment parser got further than both the
+    /// parse before it and its first token.
+    PARTIAL_AST_SNAPSHOT(
+        expected, !comment && expected.max_parsed_pos > std::max(max_before_comment, pos->begin) ? tree_so_far() : nullptr, pos, "comment");
 
     auto query = make_intrusive<ASTCreateQuery>();
     node = query;

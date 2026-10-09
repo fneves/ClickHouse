@@ -125,6 +125,10 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
     `dependencies`, `settings`), `TO` and `TO INNER UUID` (in `targets`), the column list and the
     column aliases, the storage definition (in `targets`, as the `inner_engine` of the `To` target,
     where `ast` has it), `DEFINER` and `SQL SECURITY`, `COMMENT` and `AS SELECT`;
+  * `CREATE DICTIONARY`: the name, `ON CLUSTER`, the list of attributes, each clause of the
+    definition in its own key of `dictionary` (`primary_key`, `source`, `lifetime`, `layout`,
+    `range`, `dict_settings`) and `COMMENT`. A clause whose `)` is missing is an `Error` in its key,
+    except `PRIMARY KEY (a, b`, a list, which has the `Error` as its last element;
   * `ALTER`: the database or table name, `ON CLUSTER` and the list of commands.
 * Its root is the deepest statement node that captured: the one whose failure got furthest into
   the query, and of statements nested in each other that failed at the same place, the innermost.
@@ -153,19 +157,20 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   there, even where `ast` holds a string or a structure of its own: `INSERT INTO t FORMAT` reports
   `"format": {"type": "Error", ...}`, `CREATE TABLE t (a UInt8) ENGINE =` reports `"storage"`. A
   column list that parsed and lacks its `)` has the `Error` as its last element:
-  `INSERT INTO t (a,`, `CREATE VIEW v (a,` (the column aliases), and `CREATE TABLE t (a UInt8,`
-  when the list has columns only. A list
+  `INSERT INTO t (a,`, `CREATE VIEW v (a,` (the column aliases), `CREATE DICTIONARY d (a UInt8,`,
+  and `CREATE TABLE t (a UInt8,` when the list has columns only. A list
   with indices, constraints, projections or a primary key does not keep the order of its
   elements, so for `CREATE TABLE t (a UInt8, INDEX i a TYPE minmax GRANULARITY 1` the `Error`
   is `columns_list` as a whole.
 * The column list of `INSERT`, the storage definition of `CREATE TABLE` and of a materialized
-  view, and a view's `DEFINER`, `SQL SECURITY` and `COMMENT` are optional, and the parser goes on
+  view, a view's `DEFINER` and `SQL SECURITY`, and the `COMMENT` of a view or a dictionary are
+  optional, and the parser goes on
   when they fail. They are reported only when nothing after them got further, and the storage
   definition, `DEFINER`, `SQL SECURITY` and `COMMENT` only when their parser itself got past its
   first token: `CREATE TABLE t (a UInt8) BLAH` has no `partial_ast`.
 * Not captured: a missing data source (`INSERT INTO t`), `CREATE TABLE t AS db.table` and
   `CREATE TABLE t ENGINE = MergeTree AS` (while `CREATE TABLE t (a UInt8) ENGINE = MergeTree AS`
-  reports `select`), dictionaries, and what parsed of a storage definition or of an
+  reports `select`), and what parsed of a storage definition or of an
   `ALTER` command before it failed - those are an `Error` in `storage` and `command_list` as a
   whole.
   `CREATE TABLE t (a UInt8) SETTINGS` is reported in `storage`, although the query-level

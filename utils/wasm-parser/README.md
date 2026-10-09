@@ -110,7 +110,8 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   no `partial_ast`. It is also absent when no statement keyword committed (`SELEC`), when the
   error was reported by throwing, and in a `-DENABLE_FORMATTING=OFF` build. These statements
   capture:
-  * `SELECT` (in its `FROM`-first form too): its select list, `FROM`, `PREWHERE`, `WHERE`,
+  * `SELECT` (in its `FROM`-first form too): its select list, `FROM` (with the column alias list
+    that can follow the tables, `FROM t FINAL (a, b)`), `PREWHERE`, `WHERE`,
     `GROUP BY`, `HAVING`, `WINDOW`, `QUALIFY`, `ORDER BY`, `LIMIT` (with its `OFFSET` and `BY`),
     `OFFSET` on its own, `FETCH` (in `limit_length`, which it is in `ast`) and `SETTINGS`;
   * `INSERT`: the table or table function, `PARTITION BY`, the column list, `FROM INFILE`,

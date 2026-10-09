@@ -59,11 +59,13 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
     if (expected.partial_ast_pos && expected.max_parsed_pos < expected.partial_ast_pos)
         return;
 
-    /// At the same position, an `INSERT`, `CREATE` or `ALTER` keeps what was captured before it: a
-    /// `SELECT` nested in it, which has the detail, or its own column list, which `INSERT` retries as
-    /// a subquery. A `SELECT` around a failed subquery still replaces it, as before.
+    /// At the same position, the statement that captured first is the innermost one, and it is kept:
+    /// for `SELECT * FROM (SELECT a FROM`, the subquery, not the query around it. The one exception
+    /// is a `SELECT` over a capture of another statement at that position - the column list of an
+    /// `INSERT`, which then retries the `(` as a subquery.
     const bool is_select = node->as<ASTSelectQuery>() != nullptr;
-    if (!is_select && expected.partial_ast && expected.max_parsed_pos == expected.partial_ast_pos)
+    if (expected.partial_ast && expected.max_parsed_pos == expected.partial_ast_pos
+        && (!is_select || expected.partial_ast->as<ASTSelectQuery>()))
         return;
 
     auto error = make_intrusive<ASTError>();

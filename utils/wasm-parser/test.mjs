@@ -403,6 +403,9 @@ if (hasAstJson) {
         ['INSERT INTO t SETTINGS', 'InsertQuery', 'settings_ast', 22, 22],
         ['INSERT INTO t SELECT a FROM', 'SelectQuery', 'tables', 27, 27],
         ['INSERT INTO t SELECT 1 UNION ALL SELECT a FROM', 'SelectQuery', 'tables', 46, 46],
+        /// Of statements failed at the same place, the innermost: the subquery, not the query around it.
+        ['SELECT * FROM (SELECT a FROM', 'SelectQuery', 'tables', 28, 28],
+        ['SELECT a FROM t WHERE x IN (SELECT', 'SelectQuery', 'select', 34, 34],
         /// Captured at the column list, which the parser then got past.
         ['INSERT INTO t (SELECT 1 FROM x) VALUES', null],
         ['INSERT INTO t', null],
@@ -478,6 +481,8 @@ if (hasAstJson) {
         const insert = parsed('INSERT INTO t (a, b,').doc?.partial_ast;
         check('...and the columns that parsed before the Error',
             insert?.columns?.children?.map(c => c.name ?? c.type).join() === 'a,b,Error');
+        const subquery = parsed('SELECT * FROM (SELECT a FROM').doc?.partial_ast;
+        check('...and of a subquery, its own select list', subquery?.select?.children?.[0]?.name === 'a');
     }
 }
 

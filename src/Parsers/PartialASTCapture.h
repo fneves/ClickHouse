@@ -8,20 +8,24 @@
 /// A call goes right before an existing `return false` of a statement parser, after the statement
 /// keyword has committed, or where the parser recovers from a failed optional part and goes on
 /// (such a capture is reported only if the parse gets no further). It never assigns to `node` and
-/// never moves `pos`. For `SELECT` the last argument names the clause; for `INSERT`, `CREATE` and
-/// `ALTER` it is the JSON key of the slot that failed.
+/// never moves `pos`. For `SELECT` the last argument is the clause, an `ASTSelectQuery::Expression`;
+/// for `INSERT`, `CREATE` and `ALTER` it is the JSON key of the slot that failed.
 
 #if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
 
+#include <Parsers/ASTSelectQuery.h>
 #include <Parsers/IAST_fwd.h>
 #include <Parsers/IParser.h>
 
 namespace DB
 {
 
-/// Clones `node` into `expected.partial_ast`, with an `Error` node in the slot of the clause named
+/// Clones `node` into `expected.partial_ast`, with an `Error` node in the slot named by the JSON key
 /// `expected_what`. Defined in `utils/wasm-parser`.
 void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos pos, const char * expected_what);
+
+/// The same for a `SELECT`, with the `Error` in the clause `slot` of the `ASTSelectQuery` `node`.
+void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos pos, ASTSelectQuery::Expression slot);
 
 }
 

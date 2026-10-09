@@ -330,11 +330,17 @@ extern "C" int serializeBody(void * argument)
 }
 
 #if defined(CLICKHOUSE_PARSER_PARTIAL_AST)
+static_assert(DB::PARTIAL_AST_MAX_DEPTH == MAX_PARSER_DEPTH && DB::PARTIAL_AST_MAX_ELEMENTS == MAX_AST_ELEMENTS,
+    "A partial tree is captured within the limits of an `ast`");
+
 /// The "partial_ast" of a failed parse. Not read back: it contains an `Error` node, which
-/// `ch_format_json` rejects by design, so there is no round trip to hold it to.
+/// `ch_format_json` rejects by design, so there is no round trip to hold it to. Held to the budgets
+/// of an "ast" all the same: the capture measured the tree before its `Error` was added.
 extern "C" int serializePartialBody(void * argument)
 {
     const auto & request = *static_cast<const SerializeRequest *>(argument);
+    request.ast->checkDepth(MAX_PARSER_DEPTH);
+    request.ast->checkSize(MAX_AST_ELEMENTS);
     *request.json = DB::serializeASTToJSON(*request.ast);
     return 1;
 }

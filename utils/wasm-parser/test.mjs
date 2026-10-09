@@ -403,6 +403,8 @@ if (hasAstJson) {
         ['INSERT INTO t SETTINGS', 'InsertQuery', 'settings_ast', 22, 22],
         ['INSERT INTO t SELECT a FROM', 'SelectQuery', 'tables', 27, 27],
         ['INSERT INTO t SELECT 1 UNION ALL SELECT a FROM', 'SelectQuery', 'tables', 46, 46],
+        /// A `WITH` before `INSERT` is not added to the `SELECT` that failed: it could be a subquery.
+        ['WITH cte AS (SELECT 1) INSERT INTO dst SELECT * FROM cte WHERE', 'SelectQuery', 'where', 62, 62],
         ['SELECT 1 WINDOW', 'SelectQuery', 'window', 15, 15],
         ['SELECT 1 FROM t WINDOW w AS (PARTITION BY', 'SelectQuery', 'window', 41, 41],
         ['SELECT 1 QUALIFY', 'SelectQuery', 'qualify', 16, 16],

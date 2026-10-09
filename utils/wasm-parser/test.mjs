@@ -416,8 +416,9 @@ if (hasAstJson) {
         ['CREATE TABLE t (', 'CreateQuery', 'columns_list', 16, 16],
         ['CREATE TABLE t (a UInt8,', 'CreateQuery', 'columns_list.columns.children[1]', 24, 24],
         ["CREATE TABLE t (a String DEFAULT 'abc", 'CreateQuery', 'columns_list', 33, 37],
-        /// A list of indices only: there is no list of columns to put the `Error` in.
-        ['CREATE TABLE t (INDEX i a TYPE minmax,', null],
+        /// The list does not keep the order of columns and indices, so the whole list is the slot.
+        ['CREATE TABLE t (INDEX i a TYPE minmax,', 'CreateQuery', 'columns_list', 38, 38],
+        ['CREATE TABLE t (a UInt8, INDEX i a TYPE minmax GRANULARITY 1', 'CreateQuery', 'columns_list', 60, 60],
         [`${T} ENGINE = MergeTree AS`, 'CreateQuery', 'select', 46, 46],
         [`${T} EMPTY AS`, 'CreateQuery', 'as_table_function', 33, 33],
         [`${T} CLONE AS`, 'CreateQuery', 'as_table_function', 33, 33],

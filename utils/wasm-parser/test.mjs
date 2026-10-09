@@ -511,6 +511,12 @@ if (hasAstJson) {
         const deepParsed = parsed(deep);
         check('nor one over the depth limit', !deepParsed.ok
             && deepParsed.doc?.partial_ast === undefined && deepParsed.doc?.error?.message === format(deep, 1).out);
+        /// Nor the statement around it that failed at the same place.
+        for (const around of [`SELECT * FROM (${deep}`, `SELECT 1 WHERE x IN (${deep}`]) {
+            const r = parsed(around);
+            check(`nor the query around it: ${around.slice(0, 30)}...`, !r.ok
+                && r.doc?.partial_ast === undefined && r.doc?.error?.message === format(around, 1).out);
+        }
     }
 }
 
@@ -585,6 +591,7 @@ console.log(`\n--- with a ${WORKER_STACK_MB} MB engine stack ---`);
         ['a WHERE of 499 terms, then GROUP BY', `SELECT 1 WHERE ${terms(499)} GROUP BY`],
         ['a WHERE of 5000 terms, then GROUP BY', `SELECT 1 WHERE ${terms(5000)} GROUP BY`],
         ['a select list of 5000 terms, then FROM', `SELECT ${terms(5000)} FROM`],
+        ['a subquery with a select list of 5000 terms, then FROM', `SELECT * FROM (SELECT ${terms(5000)} FROM`],
         ['5000 subscripts, then FROM', `SELECT x${'[1]'.repeat(5000)} FROM`],
         ['3000 casts with ::, then FROM', `SELECT 1${'::UInt8'.repeat(3000)} FROM`],
         ['a DEFAULT of 5000 terms, then ENGINE =', `CREATE TABLE t (a UInt8 DEFAULT ${terms(5000)}) ENGINE =`],

@@ -156,8 +156,10 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   `CREATE TABLE t (a UInt8) SETTINGS` is reported in `storage`, although the query-level
   `SETTINGS` fails on the same token.
 * A partial tree is held to the limits of an `ast`, 1000 levels and 50000 elements. One past
-  them is not reported at all - `SELECT 1 + 1 + ... FROM` with a few thousand terms has no
-  `partial_ast` - because copying it could exhaust the engine's stack. One that fits until its
+  them is not reported at all, and neither is a statement around it that failed at the same
+  place - `SELECT 1 + 1 + ... FROM` with a few thousand terms has no `partial_ast`, and neither
+  has `SELECT * FROM (SELECT 1 + 1 + ... FROM` - because copying it could exhaust the engine's
+  stack. One that fits until its
   `Error` is added, or whose JSON runs into the stack check, is `"partial_ast": null` with
   `partial_ast_error`.
 * `ch_format_json` rejects a `partial_ast` (`Unknown AST node type in JSON: 'Error'`): `Error` has

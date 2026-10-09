@@ -103,6 +103,10 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         partial->infile = infile;
         partial->compression = compression;
         tryGetIdentifierNameInto(format, partial->format);
+        /// The capture measures the tree through `children` before it clones it.
+        for (const auto & child : {database, table, columns, table_function, partition_by_expr, settings_ast, select, infile, compression})
+            if (child)
+                partial->children.push_back(child);
         return partial;
     };
 #endif

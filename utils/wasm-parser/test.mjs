@@ -485,6 +485,16 @@ if (hasAstJson) {
             insert?.columns?.children?.map(c => c.name ?? c.type).join() === 'a,b,Error');
         const subquery = parsed('SELECT * FROM (SELECT a FROM').doc?.partial_ast;
         check('...and of a subquery, its own select list', subquery?.select?.children?.[0]?.name === 'a');
+
+        /// Past the limits of an "ast" there is no partial_ast, and the error is the one without it.
+        const wide = `SELECT ${Array(60000).fill('a').join(',')} FROM`;
+        const wideParsed = parsed(wide);
+        check('a partial tree over the element limit is not reported', !wideParsed.ok
+            && wideParsed.doc?.partial_ast === undefined && wideParsed.doc?.error?.message === format(wide, 1).out);
+        const deep = `SELECT ${Array(5000).fill('1').join(' + ')} FROM`;
+        const deepParsed = parsed(deep);
+        check('nor one over the depth limit', !deepParsed.ok
+            && deepParsed.doc?.partial_ast === undefined && deepParsed.doc?.error?.message === format(deep, 1).out);
     }
 }
 
@@ -548,6 +558,32 @@ console.log(`\n--- with a ${WORKER_STACK_MB} MB engine stack ---`);
             const f = await inWorker('ch_format', sql);
             check(`ch_format of ${name} answers`, !f.trap);
         }
+    }
+
+    /// The same shapes, failing after the deep part, where a statement parser captures the tree so far:
+    /// a tree too deep for an "ast" is not copied, and the error is the one a parse without capture
+    /// reports - `ch_format` does not capture.
+    const terms = n => Array(n).fill('1').join(' + ');
+    const failing = [
+        ['a WHERE of 498 terms, then GROUP BY', `SELECT 1 WHERE ${terms(498)} GROUP BY`],
+        ['a WHERE of 499 terms, then GROUP BY', `SELECT 1 WHERE ${terms(499)} GROUP BY`],
+        ['a WHERE of 5000 terms, then GROUP BY', `SELECT 1 WHERE ${terms(5000)} GROUP BY`],
+        ['a select list of 5000 terms, then FROM', `SELECT ${terms(5000)} FROM`],
+        ['5000 subscripts, then FROM', `SELECT x${'[1]'.repeat(5000)} FROM`],
+        ['3000 casts with ::, then FROM', `SELECT 1${'::UInt8'.repeat(3000)} FROM`],
+        ['a DEFAULT of 5000 terms, then ENGINE =', `CREATE TABLE t (a UInt8 DEFAULT ${terms(5000)}) ENGINE =`],
+        ['INSERT ... SELECT with a WHERE of 3000 terms, then GROUP BY', `INSERT INTO t SELECT 1 WHERE ${terms(3000)} GROUP BY`],
+        ['INSERT ... SELECT of 3000 terms, then FORMAT', `INSERT INTO t SELECT ${terms(3000)} FORMAT`],
+    ];
+    for (const [name, sql] of failing) {
+        const r = await inWorker('ch_parse', sql);
+        if (!canFormat) {
+            check(`ch_parse of ${name} answers`, !r.trap && !r.ok);
+            continue;
+        }
+        const f = await inWorker('ch_format', sql);
+        check(`ch_parse of ${name} answers with the error of a parse without capture`,
+            !r.trap && !f.trap && !r.ok && JSON.parse(r.out).error?.message === f.out);
     }
 
     if (hasAstJson) {

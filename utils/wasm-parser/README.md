@@ -145,6 +145,11 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   failed - those are an `Error` in `storage` and `command_list` as a whole.
   `CREATE TABLE t (a UInt8) SETTINGS` is reported in `storage`, although the query-level
   `SETTINGS` fails on the same token.
+* A partial tree is held to the limits of an `ast`, 1000 levels and 50000 elements. One past
+  them is not reported at all - `SELECT 1 + 1 + ... FROM` with a few thousand terms has no
+  `partial_ast` - because copying it could exhaust the engine's stack. One that fits until its
+  `Error` is added, or whose JSON runs into the stack check, is `"partial_ast": null` with
+  `partial_ast_error`.
 * `ch_format_json` rejects a `partial_ast` (`Unknown AST node type in JSON: 'Error'`): `Error` has
   no SQL form, and the document is not an `ast`. A tree that cannot be serialized is reported as
   `"partial_ast": null` with `partial_ast_error` saying why, the way `ast_error` does.

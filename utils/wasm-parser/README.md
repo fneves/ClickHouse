@@ -137,17 +137,20 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
 * For `INSERT`, `CREATE TABLE` and `ALTER`, the slot is the key the statement's `ast` would have
   there, even where `ast` holds a string or a structure of its own: `INSERT INTO t FORMAT` reports
   `"format": {"type": "Error", ...}`, `CREATE TABLE t (a UInt8) ENGINE =` reports `"storage"`. A
-  column list that parsed and lacks its `)` (`INSERT INTO t (a,`, `CREATE TABLE t (a UInt8,`) has
-  the `Error` as its last element.
+  column list that parsed and lacks its `)` has the `Error` as its last element:
+  `INSERT INTO t (a,`, and `CREATE TABLE t (a UInt8,` when the list has columns only. A list
+  with indices, constraints, projections or a primary key does not keep the order of its
+  elements, so for `CREATE TABLE t (a UInt8, INDEX i a TYPE minmax GRANULARITY 1` the `Error`
+  is `columns_list` as a whole.
 * The column list of `INSERT` and the storage definition of `CREATE TABLE` are optional, and the
   parser goes on when they fail. They are reported only when nothing after them got further, and
   the storage definition only when the storage parser itself got past its first token:
   `CREATE TABLE t (a UInt8) BLAH` has no `partial_ast`.
 * Not captured: a missing data source (`INSERT INTO t`), `CREATE TABLE t AS db.table` and
   `CREATE TABLE t ENGINE = MergeTree AS` (while `CREATE TABLE t (a UInt8) ENGINE = MergeTree AS`
-  reports `select`), a column list of indices only (`CREATE TABLE t (INDEX i a TYPE minmax,`),
-  views, dictionaries, and what parsed of a storage definition or of an `ALTER` command before it
-  failed - those are an `Error` in `storage` and `command_list` as a whole.
+  reports `select`), views, dictionaries, and what parsed of a storage definition or of an
+  `ALTER` command before it failed - those are an `Error` in `storage` and `command_list` as a
+  whole.
   `CREATE TABLE t (a UInt8) SETTINGS` is reported in `storage`, although the query-level
   `SETTINGS` fails on the same token.
 * A partial tree is held to the limits of an `ast`, 1000 levels and 50000 elements. One past

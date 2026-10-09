@@ -95,6 +95,15 @@ void storeCapture(Expected & expected, ASTPtr partial)
     expected.partial_ast_pos = expected.max_parsed_pos;
 }
 
+/// Whether the list of a `CREATE TABLE` holds columns only, so that what failed after it is the
+/// element after the last column. With indices, constraints, projections or a primary key in it, the
+/// order of the elements is not in the tree.
+bool hasOnlyColumns(const ASTColumns & list)
+{
+    return list.columns && !list.indices && !list.constraints && !list.projections && !list.primary_key
+        && !list.primary_key_from_columns;
+}
+
 }
 
 void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos pos, ASTSelectQuery::Expression slot)
@@ -128,13 +137,16 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
 
     if (create && what == "columns_list" && create->columns_list)
     {
-        /// Likewise for `CREATE TABLE t (a UInt8,`. A list that has no columns, only indices or
-        /// constraints, is left without a capture rather than given a `columns` it never had.
-        if (!create->columns_list->columns)
+        /// Likewise for `CREATE TABLE t (a UInt8,`. Otherwise the whole list is what failed, and the
+        /// `Error` takes its place: an element that parsed after the last column cannot be told apart
+        /// from one before it.
+        if (hasOnlyColumns(*create->columns_list))
+        {
+            create->columns_list->columns->children.push_back(error);
+            storeCapture(expected, std::move(partial));
             return;
-        create->columns_list->columns->children.push_back(error);
-        storeCapture(expected, std::move(partial));
-        return;
+        }
+        create->reset(create->columns_list);
     }
 
     auto wrapper = make_intrusive<ASTPartialStatement>();

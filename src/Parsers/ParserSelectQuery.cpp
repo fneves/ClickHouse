@@ -475,11 +475,20 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
             /// mistaken for the start of an implicit-SELECT query and the following SELECT would fail.
             if (open_bracket.ignore(pos, expected))
             {
+                /// Captured only in the strict attempt, the last one: the permissive one can be retried.
                 if (!exp_list_for_aliases.parse(pos, expression_list_for_aliases, expected))
+                {
+                    PARTIAL_AST_SNAPSHOT(
+                        expected, allow_alias_without_as_keyword ? nullptr : tree_so_far(), pos, ASTSelectQuery::Expression::ALIASES);
                     return false;
+                }
 
                 if (!close_bracket.ignore(pos, expected))
+                {
+                    PARTIAL_AST_SNAPSHOT(
+                        expected, allow_alias_without_as_keyword ? nullptr : tree_so_far(), pos, ASTSelectQuery::Expression::ALIASES);
                     return false;
+                }
             }
 
             return true;
@@ -633,10 +642,16 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     if (tables && open_bracket.ignore(pos, expected))
     {
         if (!exp_list_for_aliases.parse(pos, expression_list_for_aliases, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::ALIASES);
             return false;
+        }
 
         if (!close_bracket.ignore(pos, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::ALIASES);
             return false;
+        }
     }
 
     /// PREWHERE expr

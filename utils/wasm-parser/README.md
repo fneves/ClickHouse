@@ -129,11 +129,13 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   `SELECT` in an `INSERT ... SELECT` are not copied into the `INSERT`'s own, as they are in `ast`.
 * The slot that failed holds an `Error` node instead of a clause: `begin` and `end` are byte
   offsets of where the parser stopped, the rightmost position it recorded what it `expected`
-  there - the same list as in `error`. (A `SELECT` failed inside an `INSERT` or `CREATE` that went
-  on past it, `INSERT INTO t SELECT 1 +`, keeps the list from where it failed, because `error` is
-  further on.) A broken expression is one `Error` in its clause. That
+  there - the same list as in `error`. A broken expression is one `Error` in its clause. That
   position can precede `error.begin`: for `SELECT 1 +`, the `Error` covers the `+`, while the
   error token is the end of the input.
+* A `SELECT` that failed inside a statement that then went on past it keeps the `Error` and the
+  list of where it failed, because `error` is further on: in `INSERT INTO t SELECT 1 +`, the
+  `INSERT` goes on after its `SELECT`, and in `SELECT 1 UNION ALL SELECT 2 +`, the union goes on
+  after its second branch, so `error` expects `end of query` and the `Error` an operator.
 * For `INSERT`, `CREATE TABLE` and `ALTER`, the slot is the key the statement's `ast` would have
   there, even where `ast` holds a string or a structure of its own: `INSERT INTO t FORMAT` reports
   `"format": {"type": "Error", ...}`, `CREATE TABLE t (a UInt8) ENGINE =` reports `"storage"`. A

@@ -128,6 +128,10 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   `CREATE TABLE` stays in `columns_list`, where `ast` has it in `storage`. `TO INNER UUID` is only
   `has_inner_uuid_clause`, without the `targets` that `ast` builds from it. The `SETTINGS` of the
   `SELECT` in an `INSERT ... SELECT` are not copied into the `INSERT`'s own, as they are in `ast`.
+  A `WITH` written before `INSERT` is not in a `SELECT` reported from inside the `INSERT`, where
+  `ast` has it on each `SELECT` of the union: the reported `SELECT` can be a subquery of one of
+  them, and the tree does not record which (`WITH c AS (SELECT 1) INSERT INTO t SELECT * FROM c
+  WHERE` reports the `SelectQuery` without `with`).
 * The slot that failed holds an `Error` node instead of a clause: `begin` and `end` are byte
   offsets of where the parser stopped, the rightmost position it recorded what it `expected`
   there - the same list as in `error`. A broken expression is one `Error` in its clause. That

@@ -745,6 +745,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         ParserWindowList window_list_parser;
         if (!window_list_parser.parse(pos, window_list, expected))
         {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::WINDOW);
             return false;
         }
     }
@@ -753,7 +754,10 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     if (s_qualify.ignore(pos, expected))
     {
         if (!exp_elem.parse(pos, qualify_expression, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::QUALIFY);
             return false;
+        }
     }
 
     /// ORDER BY expr ASC|DESC COLLATE 'locale' list
@@ -873,7 +877,10 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         has_offset_clause = true;
 
         if (!exp_elem.parse(pos, limit_offset, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_OFFSET);
             return false;
+        }
 
         /// SQL standard OFFSET N ROW[S] ...
 
@@ -903,10 +910,16 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 throw Exception(ErrorCodes::FIRST_AND_NEXT_TOGETHER, "Can not use FIRST and NEXT together");
         }
         else if (!s_next.ignore(pos, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
             return false;
+        }
 
         if (!exp_elem.parse(pos, limit_length, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
             return false;
+        }
 
         if (s_row.ignore(pos, expected))
         {
@@ -914,7 +927,10 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 throw Exception(ErrorCodes::ROW_AND_ROWS_TOGETHER, "Can not use ROW and ROWS together");
         }
         else if (!s_rows.ignore(pos, expected))
+        {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
             return false;
+        }
 
         if (s_with_ties.ignore(pos, expected))
         {
@@ -926,6 +942,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         }
         else
         {
+            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
             return false;
         }
     }

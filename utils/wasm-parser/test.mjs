@@ -403,6 +403,14 @@ if (hasAstJson) {
         ['INSERT INTO t SETTINGS', 'InsertQuery', 'settings_ast', 22, 22],
         ['INSERT INTO t SELECT a FROM', 'SelectQuery', 'tables', 27, 27],
         ['INSERT INTO t SELECT 1 UNION ALL SELECT a FROM', 'SelectQuery', 'tables', 46, 46],
+        ['SELECT 1 WINDOW', 'SelectQuery', 'window', 15, 15],
+        ['SELECT 1 FROM t WINDOW w AS (PARTITION BY', 'SelectQuery', 'window', 41, 41],
+        ['SELECT 1 QUALIFY', 'SelectQuery', 'qualify', 16, 16],
+        ['SELECT 1 OFFSET', 'SelectQuery', 'limit_offset', 15, 15],
+        /// `FETCH` is the limit of the finished query, so a failure anywhere in it is in `limit_length`.
+        ['SELECT 1 ORDER BY x FETCH', 'SelectQuery', 'limit_length', 25, 25],
+        ['SELECT 1 ORDER BY x FETCH FIRST 5 ROWS', 'SelectQuery', 'limit_length', 38, 38],
+        ['SELECT 1 ORDER BY x OFFSET 2 ROWS FETCH NEXT 3', 'SelectQuery', 'limit_length', 46, 46],
         /// Of statements failed at the same place, the innermost: the subquery, not the query around it.
         ['SELECT * FROM (SELECT a FROM', 'SelectQuery', 'tables', 28, 28],
         ['SELECT a FROM t WHERE x IN (SELECT', 'SelectQuery', 'select', 34, 34],

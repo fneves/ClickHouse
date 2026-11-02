@@ -243,6 +243,17 @@ bool nextClauseCannotFollowQueryLevelOffset(IParser::Pos & pos, Expected & expec
     return false;
 }
 
+/// Where `parseLimitRange` gave up after reading `AFTER` or `UNTIL`, for the partial AST: the boundary it
+/// was reading, and the start boundary of an `AFTER` that had already parsed. Not set when the word was
+/// read as a count, or was not there.
+struct LimitRangeFailure
+{
+    bool failed = false;
+    ASTSelectQuery::Expression slot = ASTSelectQuery::Expression::LIMIT_AFTER;
+    ASTPtr start;
+    bool start_all = false;
+};
+
 /// Parses the boundaries of a `LIMIT` range: `AFTER start_expr [ALL] [UNTIL end_expr]` or `UNTIL end_expr`.
 /// `AFTER` and `UNTIL` are contextual keywords, because an identifier with one of these names is still
 /// a valid row count (`WITH 2 AS after ... LIMIT after`). The word is read as a keyword only when a
@@ -250,7 +261,13 @@ bool nextClauseCannotFollowQueryLevelOffset(IParser::Pos & pos, Expected & expec
 /// that may follow a count (`LIMIT after BY x`, `LIMIT after SETTINGS ...`) selects the count reading as
 /// well. When both readings remain possible the keyword wins, so `LIMIT after(2)` is the range
 /// `LIMIT AFTER (2)`. Nothing is consumed when the count reading is selected.
-bool parseLimitRange(IParser::Pos & pos, Expected & expected, ASTPtr & limit_after, ASTPtr & limit_until, bool & limit_after_all)
+bool parseLimitRange(
+    IParser::Pos & pos,
+    Expected & expected,
+    ASTPtr & limit_after,
+    ASTPtr & limit_until,
+    bool & limit_after_all,
+    LimitRangeFailure & failure)
 {
     ParserKeyword s_after(Keyword::AFTER);
     ParserKeyword s_until(Keyword::UNTIL);
@@ -295,9 +312,10 @@ bool parseLimitRange(IParser::Pos & pos, Expected & expected, ASTPtr & limit_aft
     bool start_all = false;
 
     bool parsed = false;
+    bool start_parsed = false;
     if (has_after)
     {
-        parsed = expression_p.parse(pos, start_expr, expected);
+        parsed = start_parsed = expression_p.parse(pos, start_expr, expected);
         if (parsed)
         {
             start_all = s_all.ignore(pos, expected);
@@ -310,6 +328,13 @@ bool parseLimitRange(IParser::Pos & pos, Expected & expected, ASTPtr & limit_aft
 
     if (!parsed)
     {
+        failure.failed = true;
+        failure.slot = has_after && !start_parsed ? ASTSelectQuery::Expression::LIMIT_AFTER : ASTSelectQuery::Expression::LIMIT_UNTIL;
+        if (start_parsed)
+        {
+            failure.start = std::move(start_expr);
+            failure.start_all = start_all;
+        }
         pos = begin;
         return false;
     }
@@ -434,6 +459,21 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         set(ASTSelectQuery::Expression::SETTINGS, settings);
         set(ASTSelectQuery::Expression::INTERPOLATE, interpolate_expression_list);
         return partial;
+    };
+
+    /// A `LIMIT` range that failed after `AFTER` or `UNTIL`, which `parseLimitRange` rewinds: captured with
+    /// the `Error` in the boundary it was reading, and a start boundary that had parsed kept. Right after
+    /// a count that is a failure for good. Where the word could still be the count itself, as in
+    /// `LIMIT after`, only a range that got past its start boundary is one.
+    auto snapshot_limit_range = [&](LimitRangeFailure & failure, bool after_count)
+    {
+        if (likely(!expected.partial_ast) || !failure.failed || !(after_count || failure.start))
+            return;
+        std::swap(limit_after, failure.start);
+        std::swap(select_query->limit_after_all, failure.start_all);
+        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, failure.slot);
+        std::swap(limit_after, failure.start);
+        std::swap(select_query->limit_after_all, failure.start_all);
     };
 
     /// WITH expr_list
@@ -809,8 +849,10 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     {
         ParserToken s_comma(TokenType::Comma);
 
-        if (!parseLimitRange(pos, expected, limit_after, limit_until, select_query->limit_after_all))
+        LimitRangeFailure range_failure;
+        if (!parseLimitRange(pos, expected, limit_after, limit_until, select_query->limit_after_all, range_failure))
         {
+            snapshot_limit_range(range_failure, false);
             if (!exp_elem.parse(pos, limit_length, expected))
             {
                 PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
@@ -890,7 +932,11 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 
             /// A range may follow the count (`LIMIT n AFTER ...`), but not a `LIMIT BY`.
             if (limit_length)
-                parseLimitRange(pos, expected, limit_after, limit_until, select_query->limit_after_all);
+            {
+                LimitRangeFailure after_count_failure;
+                if (!parseLimitRange(pos, expected, limit_after, limit_until, select_query->limit_after_all, after_count_failure))
+                    snapshot_limit_range(after_count_failure, true);
+            }
         }
 
         if (top_length && (limit_length || limit_after || limit_until))
@@ -996,8 +1042,10 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 
         ParserToken s_comma(TokenType::Comma);
 
-        if (!parseLimitRange(pos, expected, limit_after, limit_until, select_query->limit_after_all))
+        LimitRangeFailure range_failure;
+        if (!parseLimitRange(pos, expected, limit_after, limit_until, select_query->limit_after_all, range_failure))
         {
+            snapshot_limit_range(range_failure, false);
             if (!exp_elem.parse(pos, limit_length, expected))
             {
                 PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
@@ -1025,7 +1073,9 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
             if (s_with_ties.ignore(pos, expected))
                 select_query->limit_with_ties = true;
 
-            parseLimitRange(pos, expected, limit_after, limit_until, select_query->limit_after_all);
+            LimitRangeFailure after_count_failure;
+            if (!parseLimitRange(pos, expected, limit_after, limit_until, select_query->limit_after_all, after_count_failure))
+                snapshot_limit_range(after_count_failure, true);
         }
     }
 

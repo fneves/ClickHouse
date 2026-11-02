@@ -2,6 +2,7 @@
 
 #include <Parsers/ASTAlterQuery.h>
 #include <Parsers/ASTColumnDeclaration.h>
+#include <Parsers/ASTIdentifier_fwd.h>
 #include <Parsers/ASTLiteral.h>
 #include <Parsers/CommonParsers.h>
 #include <Parsers/ExpressionElementParsers.h>
@@ -23,6 +24,23 @@ namespace DB
 namespace ErrorCodes
 {
 extern const int SYNTAX_ERROR;
+}
+
+namespace
+{
+
+/// The `db` of a `db.` that `parseDatabaseAndTableName` read and then cleared, because no table name
+/// followed it; `name_pos` is where the name starts. Only the partial AST uses it, to keep what parsed.
+String databaseOfIncompleteTableName(IParser::Pos name_pos)
+{
+    Expected scratch;
+    ASTPtr database;
+    String database_name;
+    if (ParserIdentifier().parse(name_pos, database, scratch) && ParserToken(TokenType::Dot).ignore(name_pos))
+        tryGetIdentifierNameInto(database, database_name);
+    return database_name;
+}
+
 }
 
 bool ParserAlterCommand::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
@@ -756,9 +774,20 @@ bool ParserAlterCommand::parseImpl(Pos & pos, ASTPtr & node, Expected & expected
                     command->move_destination_type = DataDestinationType::VOLUME;
                 else if (s_to_table.ignore(pos, expected))
                 {
+                    const auto name_pos = pos;
                     if (!parseDatabaseAndTableName(pos, expected, command->to_database, command->to_table))
                     {
-                        PARTIAL_AST_FRAGMENT(expected, command_so_far(ASTAlterCommand::MOVE_PARTITION, set_move_to_table), pos, "to_table");
+                        PARTIAL_AST_FRAGMENT(
+                            expected,
+                            command_so_far(
+                                ASTAlterCommand::MOVE_PARTITION,
+                                [&](ASTAlterCommand & partial)
+                                {
+                                    set_move_to_table(partial);
+                                    partial.to_database = databaseOfIncompleteTableName(name_pos);
+                                }),
+                            pos,
+                            "to_table");
                         return false;
                     }
                     command->move_destination_type = DataDestinationType::TABLE;
@@ -854,10 +883,20 @@ bool ParserAlterCommand::parseImpl(Pos & pos, ASTPtr & node, Expected & expected
 
                 if (s_from.ignore(pos, expected))
                 {
+                    const auto name_pos = pos;
                     if (!parseDatabaseAndTableName(pos, expected, command->from_database, command->from_table))
                     {
                         PARTIAL_AST_FRAGMENT(
-                            expected, command_so_far(ASTAlterCommand::REPLACE_PARTITION, set_no_replace), pos, "from_table");
+                            expected,
+                            command_so_far(
+                                ASTAlterCommand::REPLACE_PARTITION,
+                                [&](ASTAlterCommand & partial)
+                                {
+                                    set_no_replace(partial);
+                                    partial.from_database = databaseOfIncompleteTableName(name_pos);
+                                }),
+                            pos,
+                            "from_table");
                         return false;
                     }
 
@@ -883,9 +922,16 @@ bool ParserAlterCommand::parseImpl(Pos & pos, ASTPtr & node, Expected & expected
                     return false;
                 }
 
+                const auto name_pos = pos;
                 if (!parseDatabaseAndTableName(pos, expected, command->from_database, command->from_table))
                 {
-                    PARTIAL_AST_FRAGMENT(expected, command_so_far(ASTAlterCommand::REPLACE_PARTITION), pos, "from_table");
+                    PARTIAL_AST_FRAGMENT(
+                        expected,
+                        command_so_far(
+                            ASTAlterCommand::REPLACE_PARTITION,
+                            [&](ASTAlterCommand & partial) { partial.from_database = databaseOfIncompleteTableName(name_pos); }),
+                        pos,
+                        "from_table");
                     return false;
                 }
 

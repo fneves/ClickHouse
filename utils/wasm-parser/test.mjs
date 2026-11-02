@@ -417,6 +417,13 @@ if (hasAstJson) {
         ['SELECT 1 FROM t WINDOW w AS (PARTITION BY', 'SelectQuery', 'window', 41, 41],
         ['SELECT 1 QUALIFY', 'SelectQuery', 'qualify', 16, 16],
         ['SELECT 1 OFFSET', 'SelectQuery', 'limit_offset', 15, 15],
+        /// A `LIMIT` range that failed after `AFTER` or `UNTIL`, once the count is there. Before the count,
+        /// `LIMIT after` is the count, and only a range that got past its start boundary is one.
+        ['SELECT x FROM t LIMIT 1 AFTER', 'SelectQuery', 'limit_after', 29, 29],
+        ['SELECT x FROM t LIMIT 1 UNTIL', 'SelectQuery', 'limit_until', 29, 29],
+        ['SELECT x FROM t LIMIT 1 AFTER x UNTIL', 'SelectQuery', 'limit_until', 37, 37],
+        ['SELECT x FROM t LIMIT 1 BY x LIMIT 1 AFTER', 'SelectQuery', 'limit_after', 42, 42],
+        ['SELECT x FROM t LIMIT AFTER x UNTIL', 'SelectQuery', 'limit_until', 35, 35],
         /// `FETCH` is the limit of the finished query, so a failure anywhere in it is in `limit_length`.
         ['SELECT 1 ORDER BY x FETCH', 'SelectQuery', 'limit_length', 25, 25],
         ['SELECT 1 ORDER BY x FETCH FIRST 5 ROWS', 'SelectQuery', 'limit_length', 38, 38],
@@ -550,6 +557,9 @@ if (hasAstJson) {
         ["ALTER TABLE t MOVE PART 'p' TO DISK", 'AlterQuery', 'command_list.children[0].move_destination_name', 35, 35],
         ['ALTER TABLE t MOVE PARTITION 1 TO TABLE', 'AlterQuery', 'command_list.children[0].to_table', 39, 39],
         ['ALTER TABLE t ATTACH PARTITION 1 FROM', 'AlterQuery', 'command_list.children[0].from_table', 37, 37],
+        ['ALTER TABLE t MOVE PARTITION 1 TO TABLE db.', 'AlterQuery', 'command_list.children[0].to_table', 43, 43],
+        ['ALTER TABLE t ATTACH PARTITION 1 FROM db.', 'AlterQuery', 'command_list.children[0].from_table', 41, 41],
+        ['ALTER TABLE t REPLACE PARTITION 1 FROM db.', 'AlterQuery', 'command_list.children[0].from_table', 42, 42],
         ['ALTER TABLE t FETCH PARTITION 1 FROM', 'AlterQuery', 'command_list.children[0].from', 36, 36],
         ['ALTER TABLE t FREEZE WITH NAME', 'AlterQuery', 'command_list.children[0].with_name', 30, 30],
         ['ALTER TABLE t MODIFY COLUMN a REMOVE', 'AlterQuery', 'command_list.children[0].remove_property', 36, 36],
@@ -628,6 +638,14 @@ if (hasAstJson) {
             ['ALTER TABLE t MOVE PARTITION 1 TO TABLE', ' t2', ['command_list.children.0.command_type', 'command_list.children.0.move_destination_type',
                 'command_list.children.0.partition']],
             ['ALTER TABLE t ATTACH PARTITION 1 FROM', ' t2', ['command_list.children.0.command_type', 'command_list.children.0.replace', 'command_list.children.0.partition']],
+            /// The `db` of a `db.` that has no table name yet is kept.
+            ['ALTER TABLE t MOVE PARTITION 1 TO TABLE db.', 't2', ['command_list.children.0.move_destination_type', 'command_list.children.0.to_database']],
+            ['ALTER TABLE t ATTACH PARTITION 1 FROM db.', 't2', ['command_list.children.0.replace', 'command_list.children.0.from_database']],
+            ['ALTER TABLE t REPLACE PARTITION 1 FROM db.', 't2', ['command_list.children.0.replace', 'command_list.children.0.from_database']],
+            /// A start boundary that parsed is kept when the end boundary of the range failed.
+            ['SELECT x FROM t LIMIT 1 AFTER x UNTIL', ' 5', ['select', 'tables', 'limit_length', 'limit_after']],
+            ['SELECT x FROM t LIMIT 1 AFTER x ALL UNTIL', ' 5', ['tables', 'limit_length', 'limit_after', 'limit_after_all']],
+            ['SELECT x FROM t LIMIT 1 BY x LIMIT 1 AFTER x UNTIL', ' 5', ['limit_by', 'limit_after']],
             ['ALTER TABLE t UPDATE a = 1 WHERE', ' 1', ['command_list.children.0.command_type', 'command_list.children.0.update_assignments']],
             ['ALTER TABLE t MODIFY REFRESH EVERY 1 HOUR OFFSET', ' 5 MINUTE', ['command_list.children.0.command_type', 'command_list.children.0.refresh.period']],
             ['ALTER DATABASE d MODIFY SETTING', ' x = 1', ['database_ast', 'alter_object', 'command_list.children.0.command_type']],

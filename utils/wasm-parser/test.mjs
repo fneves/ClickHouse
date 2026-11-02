@@ -387,6 +387,7 @@ if (hasAstJson) {
 
     const T = 'CREATE TABLE t (a UInt8)';
     /// The query, then the root type, the path of the `Error` and its range - or null for no partial_ast.
+    /// A last `false` is for a failure in an expression, where `error` expects something else than the `Error`.
     const statements = [
         ['INSERT INTO t (a,', 'InsertQuery', 'columns.children[1]', 17, 17],
         ['INSERT INTO t (', 'InsertQuery', 'columns', 15, 15],
@@ -431,6 +432,15 @@ if (hasAstJson) {
         /// Of statements failed at the same place, the innermost: the subquery, not the query around it.
         ['SELECT * FROM (SELECT a FROM', 'SelectQuery', 'tables', 28, 28],
         ['SELECT a FROM t WHERE x IN (SELECT', 'SelectQuery', 'select', 34, 34],
+        /// A list of tables that failed after its first element gets the `Error` as one more element.
+        ['SELECT * FROM t JOIN', 'SelectQuery', 'tables.children[1]', 20, 20],
+        ['SELECT * FROM t JOIN u ON a =', 'SelectQuery', 'tables.children[1]', 28, 29, false],
+        ['SELECT * FROM t LEFT JOIN u USING (', 'SelectQuery', 'tables.children[1]', 35, 35],
+        ['SELECT * FROM t,', 'SelectQuery', 'tables.children[1]', 16, 16],
+        ['FROM t JOIN u ON a =', 'SelectQuery', 'tables.children[1]', 19, 20, false],
+        ['SELECT * FROM t JOIN (SELECT a FROM', 'SelectQuery', 'tables', 35, 35],
+        /// The abandoned `SELECT` of `eval` is dropped with the attempt, and the outer one reports.
+        ['SELECT * FROM eval(SELECT a FROM', 'SelectQuery', 'tables', 26, 27],
         /// Captured at the column list, which the parser then got past.
         ['INSERT INTO t (SELECT 1 FROM x) VALUES', null],
         /// A missing data source is an `Error` in `select`, the one source `ast` has as a tree.
@@ -578,7 +588,7 @@ if (hasAstJson) {
         ['ALTER TABLE t MODIFY QUERY SELECT a FROM', 'SelectQuery', 'tables', 40, 40],
         ['ALTER TABLE t DELETE WHERE x IN (SELECT a FROM', 'SelectQuery', 'tables', 46, 46],
     ];
-    for (const [sql, type, path, begin, end] of statements) {
+    for (const [sql, type, path, begin, end, expectsAsError = true] of statements) {
         const raw = call(sql, ch_parse);
         const r = { ok: raw.ok, doc: JSON.parse(raw.out) };
         const partial = r.doc.partial_ast;
@@ -592,7 +602,9 @@ if (hasAstJson) {
             && partial?.type === type && errors.length === 1 && errors[0].path === path
             && errors[0].node.begin === begin && errors[0].node.end === end && !hasDuplicateKeys(raw.out));
         /// The parse can add to what it expects after the capture: `end of query` after `INSERT ... SELECT`.
-        check('...expecting what "error" expects', JSON.stringify(errors[0]?.node.expected) === JSON.stringify(r.doc.error.expected ?? []));
+        /// Not where the failure is in an expression, which ends before the end of the query that `error` is at.
+        if (expectsAsError)
+            check('...expecting what "error" expects', JSON.stringify(errors[0]?.node.expected) === JSON.stringify(r.doc.error.expected ?? []));
     }
 
     if (hasAstJson) {
@@ -711,6 +723,29 @@ if (hasAstJson) {
             const r = parsed(around);
             check(`nor the query around it: ${around.slice(0, 30)}...`, !r.ok
                 && r.doc?.partial_ast === undefined && r.doc?.error?.message === format(around, 1).out);
+        }
+        /// A deep nesting that cloning the tree would not fit in the stack is no reason for another error:
+        /// whatever the depth, the error is the one a parse without the capture reports.
+        const nestings = {
+            'scalar subqueries': n => `SELECT ${'(SELECT '.repeat(n)}1 FROM`,
+            'FROM subqueries': n => `SELECT * FROM ${'(SELECT * FROM '.repeat(n)}t WHERE`,
+            'IN subqueries': n => `SELECT 1 FROM t WHERE ${'x IN (SELECT x FROM t WHERE '.repeat(n)}x =`,
+            'parentheses': n => `SELECT ${'('.repeat(n)}1 FROM`,
+        };
+        for (const [name, nesting] of Object.entries(nestings)) {
+            const different = [];
+            let reported = 0;
+            for (let n = 1; n <= 250; ++n) {
+                const sql = nesting(n);
+                const r = parsed(sql);
+                if (r.doc?.error?.message !== format(sql, 1).out)
+                    different.push(n);
+                if (r.doc?.partial_ast !== undefined)
+                    ++reported;
+            }
+            check(`${name}: the error is the same with the capture at every depth up to 250${different.length ? `, not at ${different.slice(0, 10)}` : ''}`,
+                different.length === 0);
+            check(`${name}: shallow nestings report a partial_ast (${reported} of 250 do)`, reported >= 20);
         }
         /// A document `ch_format_json` would not read is turned away as an "ast" is: one node, over 1 MiB.
         const literal = `[${Array(60000).fill('1').join(', ')}]`;

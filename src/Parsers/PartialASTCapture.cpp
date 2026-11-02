@@ -159,6 +159,8 @@ struct Slot
     void (*reset)(Node &);
 };
 
+/// `field` names a member, so it cannot be put in parentheses.
+// NOLINTBEGIN(bugprone-macro-parentheses)
 #define RESET_CHILD(Node, field) \
     Slot<Node> \
     { \
@@ -169,6 +171,7 @@ struct Slot
     { \
         #field, [](Node & node) { node.field.clear(); } \
     }
+// NOLINTEND(bugprone-macro-parentheses)
 #define KEEP(Node, key) \
     Slot<Node> { key, nullptr }
 

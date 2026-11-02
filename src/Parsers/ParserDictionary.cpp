@@ -216,13 +216,13 @@ bool ParserDictionary::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 
         if (!expression_list_p.parse(pos, primary_key, expected))
         {
-            PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "primary_key");
+            PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "primary_key");
             return false;
         }
 
         if (was_open && !close.ignore(pos, expected))
         {
-            PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "primary_key");
+            PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "primary_key");
             return false;
         }
     }
@@ -235,19 +235,19 @@ bool ParserDictionary::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 
             if (!open.ignore(pos, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "source");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "source");
                 return false;
             }
 
             if (!key_value_pairs_p.parse(pos, ast_source, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "source");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "source");
                 return false;
             }
 
             if (!close.ignore(pos, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "source");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "source");
                 return false;
             }
 
@@ -258,19 +258,19 @@ bool ParserDictionary::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         {
             if (!open.ignore(pos, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "lifetime");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "lifetime");
                 return false;
             }
 
             if (!lifetime_p.parse(pos, ast_lifetime, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "lifetime");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "lifetime");
                 return false;
             }
 
             if (!close.ignore(pos, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "lifetime");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "lifetime");
                 return false;
             }
 
@@ -281,19 +281,19 @@ bool ParserDictionary::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         {
             if (!open.ignore(pos, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "layout");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "layout");
                 return false;
             }
 
             if (!layout_p.parse(pos, ast_layout, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "layout");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "layout");
                 return false;
             }
 
             if (!close.ignore(pos, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "layout");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "layout");
                 return false;
             }
 
@@ -304,19 +304,19 @@ bool ParserDictionary::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         {
             if (!open.ignore(pos, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "range");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "range");
                 return false;
             }
 
             if (!range_p.parse(pos, ast_range, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "range");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "range");
                 return false;
             }
 
             if (!close.ignore(pos, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "range");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "range");
                 return false;
             }
 
@@ -327,19 +327,19 @@ bool ParserDictionary::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         {
             if (!open.ignore(pos, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "dict_settings");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "dict_settings");
                 return false;
             }
 
             if (!settings_p.parse(pos, ast_settings, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "dict_settings");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "dict_settings");
                 return false;
             }
 
             if (!close.ignore(pos, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, dictionary_so_far(), pos, "dict_settings");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, dictionary_so_far(), pos, "dict_settings");
                 return false;
             }
 

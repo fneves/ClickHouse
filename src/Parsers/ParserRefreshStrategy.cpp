@@ -34,7 +34,7 @@ bool ParserRefreshStrategy::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         ASTPtr period;
         if (!ParserTimeInterval{ParserTimeInterval::Options {.allow_zero = true}}.parse(pos, period, expected))
         {
-            PARTIAL_AST_FRAGMENT(expected, refresh, pos, "period");
+            PARTIAL_AST_CAPTURE_FRAGMENT(expected, refresh, pos, "period");
             return false;
         }
 
@@ -46,7 +46,7 @@ bool ParserRefreshStrategy::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         ASTPtr period;
         if (!ParserTimeInterval{{.allow_mixing_calendar_and_clock_units = false}}.parse(pos, period, expected))
         {
-            PARTIAL_AST_FRAGMENT(expected, refresh, pos, "period");
+            PARTIAL_AST_CAPTURE_FRAGMENT(expected, refresh, pos, "period");
             return false;
         }
         refresh->set(refresh->period, period);
@@ -55,7 +55,7 @@ bool ParserRefreshStrategy::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
             ASTPtr periodic_offset;
             if (!ParserTimeInterval{{.allow_zero = true}}.parse(pos, periodic_offset, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, refresh, pos, "offset");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, refresh, pos, "offset");
                 return false;
             }
 
@@ -73,7 +73,7 @@ bool ParserRefreshStrategy::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         ASTPtr spread;
         if (!ParserTimeInterval{{.allow_zero = true}}.parse(pos, spread, expected))
         {
-            PARTIAL_AST_FRAGMENT(expected, refresh, pos, "spread");
+            PARTIAL_AST_CAPTURE_FRAGMENT(expected, refresh, pos, "spread");
             return false;
         }
 
@@ -91,7 +91,7 @@ bool ParserRefreshStrategy::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
             /*allow_empty*/ false};
         if (!list_parser.parse(pos, dependencies, expected))
         {
-            PARTIAL_AST_FRAGMENT(expected, refresh, pos, "dependencies");
+            PARTIAL_AST_CAPTURE_FRAGMENT(expected, refresh, pos, "dependencies");
             return false;
         }
         refresh->set(refresh->dependencies, dependencies);
@@ -103,7 +103,7 @@ bool ParserRefreshStrategy::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         if (!refresh->dependencies)
         {
             /// After `RANDOMIZE FOR`, which parsed, `DEPENDS ON` is what is missing.
-            PARTIAL_AST_FRAGMENT(expected, refresh->spread ? ASTPtr(refresh) : nullptr, pos, "dependencies");
+            PARTIAL_AST_CAPTURE_FRAGMENT_IF(expected, refresh->spread, refresh, pos, "dependencies");
             return false;
         }
 
@@ -118,7 +118,7 @@ bool ParserRefreshStrategy::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         ASTPtr settings;
         if (!ParserSetQuery{true}.parse(pos, settings, expected))
         {
-            PARTIAL_AST_FRAGMENT(expected, refresh, pos, "settings");
+            PARTIAL_AST_CAPTURE_FRAGMENT(expected, refresh, pos, "settings");
             return false;
         }
         refresh->set(refresh->settings, settings);

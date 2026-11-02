@@ -465,13 +465,13 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     /// the `Error` in the boundary it was reading, and a start boundary that had parsed kept. Right after
     /// a count that is a failure for good. Where the word could still be the count itself, as in
     /// `LIMIT after`, only a range that got past its start boundary is one.
-    auto snapshot_limit_range = [&](LimitRangeFailure & failure, bool after_count)
+    auto capture_limit_range = [&](LimitRangeFailure & failure, bool after_count)
     {
         if (likely(!expected.partial_ast) || !failure.failed || !(after_count || failure.start))
             return;
         std::swap(limit_after, failure.start);
         std::swap(select_query->limit_after_all, failure.start_all);
-        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, failure.slot);
+        PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, failure.slot);
         std::swap(limit_after, failure.start);
         std::swap(select_query->limit_after_all, failure.start_all);
     };
@@ -503,10 +503,15 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         Pos tables_end = pos;
         auto parse_tables_and_alias_list = [&](bool allow_alias_without_as_keyword)
         {
+            const char * max_before_tables = expected.max_parsed_pos;
             if (!ParserTablesInSelectQuery(allow_alias_without_as_keyword).parse(pos, tables, expected))
                 return false;
 
             tables_end = pos;
+
+            /// The list ends where an element failed inside itself (`FROM t JOIN u ON a =`, `FROM t,`).
+            PARTIAL_AST_CAPTURE_IF(
+                expected, optionalPartFailed(expected, max_before_tables, pos), tree_so_far(), pos, ASTSelectQuery::Expression::TABLES);
 
             /// In the FROM-first form, an optional column alias list can follow the tables, before the
             /// (possibly omitted) SELECT clause, e.g. FROM t (a, b) SELECT a. It must be parsed here,
@@ -517,15 +522,15 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 /// Captured only in the strict attempt, the last one: the permissive one can be retried.
                 if (!exp_list_for_aliases.parse(pos, expression_list_for_aliases, expected))
                 {
-                    PARTIAL_AST_SNAPSHOT(
-                        expected, allow_alias_without_as_keyword ? nullptr : tree_so_far(), pos, ASTSelectQuery::Expression::ALIASES);
+                    PARTIAL_AST_CAPTURE_IF(
+                        expected, !allow_alias_without_as_keyword, tree_so_far(), pos, ASTSelectQuery::Expression::ALIASES);
                     return false;
                 }
 
                 if (!close_bracket.ignore(pos, expected))
                 {
-                    PARTIAL_AST_SNAPSHOT(
-                        expected, allow_alias_without_as_keyword ? nullptr : tree_so_far(), pos, ASTSelectQuery::Expression::ALIASES);
+                    PARTIAL_AST_CAPTURE_IF(
+                        expected, !allow_alias_without_as_keyword, tree_so_far(), pos, ASTSelectQuery::Expression::ALIASES);
                     return false;
                 }
             }
@@ -557,7 +562,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 
             if (!parse_tables_and_alias_list(/*allow_alias_without_as_keyword*/ false))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::TABLES);
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::TABLES);
                 return false;
             }
         }
@@ -602,18 +607,18 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
             {
                 if (!exp_list.parse(pos, distinct_on_expression_list, expected))
                 {
-                    PARTIAL_AST_SNAPSHOT(expected, has_select_keyword ? tree_so_far() : nullptr, pos, ASTSelectQuery::Expression::SELECT);
+                    PARTIAL_AST_CAPTURE_IF(expected, has_select_keyword, tree_so_far(), pos, ASTSelectQuery::Expression::SELECT);
                     return false;
                 }
                 if (!close_bracket.ignore(pos, expected))
                 {
-                    PARTIAL_AST_SNAPSHOT(expected, has_select_keyword ? tree_so_far() : nullptr, pos, ASTSelectQuery::Expression::SELECT);
+                    PARTIAL_AST_CAPTURE_IF(expected, has_select_keyword, tree_so_far(), pos, ASTSelectQuery::Expression::SELECT);
                     return false;
                 }
             }
             else
             {
-                PARTIAL_AST_SNAPSHOT(expected, has_select_keyword ? tree_so_far() : nullptr, pos, ASTSelectQuery::Expression::SELECT);
+                PARTIAL_AST_CAPTURE_IF(expected, has_select_keyword, tree_so_far(), pos, ASTSelectQuery::Expression::SELECT);
                 return false;
             }
         }
@@ -627,7 +632,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 
         if (has_all && (select_query->distinct || distinct_on_expression_list))
         {
-            PARTIAL_AST_SNAPSHOT(expected, has_select_keyword ? tree_so_far() : nullptr, pos, ASTSelectQuery::Expression::SELECT);
+            PARTIAL_AST_CAPTURE_IF(expected, has_select_keyword, tree_so_far(), pos, ASTSelectQuery::Expression::SELECT);
             return false;
         }
 
@@ -639,12 +644,12 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
             {
                 if (!num.parse(pos, top_length, expected))
                 {
-                    PARTIAL_AST_SNAPSHOT(expected, has_select_keyword ? tree_so_far() : nullptr, pos, ASTSelectQuery::Expression::SELECT);
+                    PARTIAL_AST_CAPTURE_IF(expected, has_select_keyword, tree_so_far(), pos, ASTSelectQuery::Expression::SELECT);
                     return false;
                 }
                 if (!close_bracket.ignore(pos, expected))
                 {
-                    PARTIAL_AST_SNAPSHOT(expected, has_select_keyword ? tree_so_far() : nullptr, pos, ASTSelectQuery::Expression::SELECT);
+                    PARTIAL_AST_CAPTURE_IF(expected, has_select_keyword, tree_so_far(), pos, ASTSelectQuery::Expression::SELECT);
                     return false;
                 }
             }
@@ -652,7 +657,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
             {
                 if (!num.parse(pos, top_length, expected))
                 {
-                    PARTIAL_AST_SNAPSHOT(expected, has_select_keyword ? tree_so_far() : nullptr, pos, ASTSelectQuery::Expression::SELECT);
+                    PARTIAL_AST_CAPTURE_IF(expected, has_select_keyword, tree_so_far(), pos, ASTSelectQuery::Expression::SELECT);
                     return false;
                 }
             }
@@ -663,7 +668,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 
         if (!exp_list_for_select_clause.parse(pos, select_expression_list, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, has_select_keyword ? tree_so_far() : nullptr, pos, ASTSelectQuery::Expression::SELECT);
+            PARTIAL_AST_CAPTURE_IF(expected, has_select_keyword, tree_so_far(), pos, ASTSelectQuery::Expression::SELECT);
             return false;
         }
     }
@@ -671,24 +676,28 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     /// FROM database.table or FROM table or FROM (subquery) or FROM tableFunction(...)
     if (!tables && s_from.ignore(pos, expected))
     {
+        const char * max_before_tables = expected.max_parsed_pos;
         if (!ParserTablesInSelectQuery().parse(pos, tables, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::TABLES);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::TABLES);
             return false;
         }
+
+        PARTIAL_AST_CAPTURE_IF(
+            expected, optionalPartFailed(expected, max_before_tables, pos), tree_so_far(), pos, ASTSelectQuery::Expression::TABLES);
     }
 
     if (tables && open_bracket.ignore(pos, expected))
     {
         if (!exp_list_for_aliases.parse(pos, expression_list_for_aliases, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::ALIASES);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::ALIASES);
             return false;
         }
 
         if (!close_bracket.ignore(pos, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::ALIASES);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::ALIASES);
             return false;
         }
     }
@@ -698,7 +707,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     {
         if (!exp_elem.parse(pos, prewhere_expression, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::PREWHERE);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::PREWHERE);
             return false;
         }
     }
@@ -708,7 +717,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     {
         if (!exp_elem.parse(pos, where_expression, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::WHERE);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::WHERE);
             return false;
         }
     }
@@ -728,7 +737,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         if ((select_query->group_by_with_rollup || select_query->group_by_with_cube || select_query->group_by_with_grouping_sets) &&
             !open_bracket.ignore(pos, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
             return false;
         }
 
@@ -736,7 +745,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         {
             if (!grouping_sets_list.parse(pos, group_expression_list, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
                 return false;
             }
         }
@@ -744,7 +753,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         {
             if (!exp_list.parse(pos, group_expression_list, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
                 return false;
             }
         }
@@ -753,7 +762,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         if ((select_query->group_by_with_rollup || select_query->group_by_with_cube || select_query->group_by_with_grouping_sets) &&
             !close_bracket.ignore(pos, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
             return false;
         }
     }
@@ -765,7 +774,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         {
             if (select_query->group_by_with_rollup)
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
                 return false;
             }
             select_query->group_by_with_rollup = true;
@@ -774,7 +783,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         {
             if (select_query->group_by_with_cube)
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
                 return false;
             }
             select_query->group_by_with_cube = true;
@@ -783,14 +792,14 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         {
             if (select_query->group_by_with_totals)
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
                 return false;
             }
             select_query->group_by_with_totals = true;
         }
         else
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::GROUP_BY);
             return false;
         }
     }
@@ -800,7 +809,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     {
         if (!exp_elem.parse(pos, having_expression, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::HAVING);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::HAVING);
             return false;
         }
     }
@@ -811,7 +820,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         ParserWindowList window_list_parser;
         if (!window_list_parser.parse(pos, window_list, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::WINDOW);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::WINDOW);
             return false;
         }
     }
@@ -821,7 +830,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     {
         if (!exp_elem.parse(pos, qualify_expression, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::QUALIFY);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::QUALIFY);
             return false;
         }
     }
@@ -832,7 +841,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         bool order_by_all = false;
         if (!parseOrderByClauseBody(pos, expected, order_expression_list, interpolate_expression_list, order_by_all))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::ORDER_BY);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::ORDER_BY);
             return false;
         }
         select_query->order_by_all = order_by_all;
@@ -852,10 +861,10 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         LimitRangeFailure range_failure;
         if (!parseLimitRange(pos, expected, limit_after, limit_until, select_query->limit_after_all, range_failure))
         {
-            snapshot_limit_range(range_failure, false);
+            capture_limit_range(range_failure, false);
             if (!exp_elem.parse(pos, limit_length, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
                 return false;
             }
 
@@ -864,7 +873,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 limit_offset = limit_length;
                 if (!exp_elem.parse(pos, limit_length, expected))
                 {
-                    PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
+                    PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
                     return false;
                 }
 
@@ -878,7 +887,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
             {
                 if (!exp_elem.parse(pos, limit_offset, expected))
                 {
-                    PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_OFFSET);
+                    PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_OFFSET);
                     return false;
                 }
 
@@ -924,7 +933,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 {
                     if (!exp_list.parse(pos, limit_by_expression_list, expected))
                     {
-                        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_BY);
+                        PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_BY);
                         return false;
                     }
                 }
@@ -935,7 +944,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
             {
                 LimitRangeFailure after_count_failure;
                 if (!parseLimitRange(pos, expected, limit_after, limit_until, select_query->limit_after_all, after_count_failure))
-                    snapshot_limit_range(after_count_failure, true);
+                    capture_limit_range(after_count_failure, true);
             }
         }
 
@@ -950,7 +959,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 
         if (!exp_elem.parse(pos, limit_offset, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_OFFSET);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_OFFSET);
             return false;
         }
 
@@ -979,13 +988,13 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         }
         else if (!s_next.ignore(pos, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
             return false;
         }
 
         if (!exp_elem.parse(pos, limit_length, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
             return false;
         }
 
@@ -996,7 +1005,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         }
         else if (!s_rows.ignore(pos, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
             return false;
         }
 
@@ -1010,7 +1019,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         }
         else
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
             return false;
         }
     }
@@ -1036,7 +1045,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     {
         if (!limit_by_length || limit_length || limit_after || limit_until)
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
             return false;
         }
 
@@ -1045,10 +1054,10 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         LimitRangeFailure range_failure;
         if (!parseLimitRange(pos, expected, limit_after, limit_until, select_query->limit_after_all, range_failure))
         {
-            snapshot_limit_range(range_failure, false);
+            capture_limit_range(range_failure, false);
             if (!exp_elem.parse(pos, limit_length, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
                 return false;
             }
 
@@ -1057,7 +1066,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 limit_offset = limit_length;
                 if (!exp_elem.parse(pos, limit_length, expected))
                 {
-                    PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
+                    PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_LENGTH);
                     return false;
                 }
             }
@@ -1065,7 +1074,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
             {
                 if (!exp_elem.parse(pos, limit_offset, expected))
                 {
-                    PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_OFFSET);
+                    PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::LIMIT_OFFSET);
                     return false;
                 }
             }
@@ -1075,7 +1084,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 
             LimitRangeFailure after_count_failure;
             if (!parseLimitRange(pos, expected, limit_after, limit_until, select_query->limit_after_all, after_count_failure))
-                snapshot_limit_range(after_count_failure, true);
+                capture_limit_range(after_count_failure, true);
         }
     }
 
@@ -1090,7 +1099,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 
         if (!parser_settings.parse(pos, settings, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, ASTSelectQuery::Expression::SETTINGS);
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, ASTSelectQuery::Expression::SETTINGS);
             return false;
         }
     }

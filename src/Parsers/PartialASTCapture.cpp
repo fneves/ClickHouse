@@ -11,8 +11,10 @@
 #include <Parsers/ASTRefreshStrategy.h>
 #include <Parsers/ASTSelectQuery.h>
 #include <Parsers/ASTViewTargets.h>
+#include <Common/checkStackSize.h>
 
 #include <algorithm>
+#include <array>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -25,27 +27,37 @@ namespace DB
 namespace
 {
 
-/// Whether `root` is within the limits `ch_parse` holds an `ast` to, counted the way `IAST::checkDepth`
-/// and `IAST::checkSize` count. Iterative, and it stops at the first node past a limit, so measuring
-/// a tree of any shape is cheap and cannot throw - unlike cloning it, which is recursive and, for the
-/// left-deep tree of a long operator chain, runs out of the engine's stack, which `checkStackSize`
-/// cannot see. `extra`, if any, is measured as one more child of `root`.
-bool fitsPartialASTLimits(const IAST & root, const IAST * extra)
+/// The stack that cloning one level of a tree takes, with some to spare. A clone checks the stack at
+/// each level and throws when it is more than half used, so a capture that would run into that is
+/// not taken.
+constexpr size_t CLONE_STACK_BYTES_PER_LEVEL = 512;
+
+/// The stack that a capture needs at least, to assemble a tree and clone the top levels of it.
+constexpr size_t MIN_CAPTURE_STACK_HEADROOM = 16 * 1024;
+
+/// Whether `root` is within the limits of the caller, counted the way `IAST::checkDepth` and
+/// `IAST::checkSize` count, and can be cloned with the stack that is left. Iterative, and it stops at
+/// the first node past a limit, so measuring a tree of any shape is cheap and cannot throw. Cloning it
+/// is recursive, and for the left-deep tree of a long operator chain, or for deeply nested subqueries,
+/// it would run out of the stack. `extra`, if any, is measured as one more child of `root`.
+bool fitsPartialASTLimits(const PartialASTState & state, const IAST & root, const IAST * extra)
 {
     std::vector<std::pair<const IAST *, size_t>> nodes{{&root, 0}};
     if (extra)
         nodes.emplace_back(extra, 1);
     size_t size = 0;
+    size_t deepest = 0;
     while (!nodes.empty())
     {
         auto [node, depth] = nodes.back();
         nodes.pop_back();
-        if (depth >= PARTIAL_AST_MAX_DEPTH || ++size > PARTIAL_AST_MAX_ELEMENTS)
+        if (depth >= state.max_depth || ++size > state.max_elements)
             return false;
+        deepest = std::max(deepest, depth);
         for (const auto & child : node->children)
             nodes.emplace_back(child.get(), depth + 1);
     }
-    return true;
+    return (deepest + 1) * CLONE_STACK_BYTES_PER_LEVEL <= getStackSizeHeadroom();
 }
 
 /// A tree that could never be an `ast` is not reported. Nothing captured before it is: that was a
@@ -53,30 +65,29 @@ bool fitsPartialASTLimits(const IAST & root, const IAST * extra)
 void blockCaptures(PartialASTState & state, const Expected & expected)
 {
     state.tree = nullptr;
-    state.pos = expected.max_parsed_pos;
+    state.tree_pos = expected.max_parsed_pos;
 }
 
-/// The checks every capture makes before it clones anything; false if it should not be taken.
-/// `extra` is a tree that the capture adds to `node` as one more child.
-bool startCapture(PartialASTState & state, const Expected & expected, const ASTPtr & node, bool is_select, const IAST * extra = nullptr)
+/// The checks every capture makes before it clones anything: false if it should not be taken. `extra`
+/// is a tree that the capture adds to `node` as one more child.
+bool shouldCapture(PartialASTState & state, const Expected & expected, const ASTPtr & node, bool is_select, const IAST * extra = nullptr)
 {
     if (!node)
         return false;
 
     /// A capture that did not get as far as the one already taken is a backtracked alternative.
-    if (state.pos && expected.max_parsed_pos < state.pos)
+    if (state.tree_pos && expected.max_parsed_pos < state.tree_pos)
         return false;
 
-    /// At the same position, the statement that captured first is the innermost one, and it is kept:
-    /// for `SELECT * FROM (SELECT a FROM`, the subquery, not the query around it. The one exception
-    /// is a `SELECT` over a capture of another statement at that position - the column list of an
-    /// `INSERT`, which then retries the `(` as a subquery. A position with `pos` and no
-    /// `tree` is one whose innermost statement was too big, and nothing around it is taken.
-    if (state.pos && expected.max_parsed_pos == state.pos
-        && (!state.tree || !is_select || state.tree->as<ASTSelectQuery>()))
+    /// At the same position, the statement that captured first is the innermost one, and it is kept.
+    /// For `SELECT * FROM (SELECT a FROM`, that is the subquery, not the query around it. The one
+    /// exception is a `SELECT` over a capture of another statement at that position: the column list of
+    /// an `INSERT`, which then retries the `(` as a subquery. A position with `tree_pos` and no `tree`
+    /// is one where the innermost statement was too big, and nothing around it is taken.
+    if (state.tree_pos && expected.max_parsed_pos == state.tree_pos && (!state.tree || !is_select || state.tree->as<ASTSelectQuery>()))
         return false;
 
-    if (!fitsPartialASTLimits(*node, extra))
+    if (!fitsPartialASTLimits(state, *node, extra))
     {
         blockCaptures(state, expected);
         return false;
@@ -108,158 +119,231 @@ boost::intrusive_ptr<ASTError> makeError(const Expected & expected, IParser::Pos
 void storeCapture(PartialASTState & state, const Expected & expected, ASTPtr partial)
 {
     state.tree = std::move(partial);
-    state.pos = expected.max_parsed_pos;
+    state.tree_pos = expected.max_parsed_pos;
 }
 
-/// The node a fragment is a part of: the node of an `ASTPartialStatement`, or the list itself.
+/// The node a fragment is a part of: the node of an `ASTPartialNode`, or the list itself.
 const IAST * fragmentNode(const IAST & fragment)
 {
-    if (const auto * wrapper = fragment.as<ASTPartialStatement>())
-        return wrapper->statement.get();
+    if (const auto * wrapper = fragment.as<ASTPartialNode>())
+        return wrapper->node.get();
     return &fragment;
 }
 
-/// Whether a fragment fills the slot `key` of `parent`, or, for a null key, is an element of the list
-/// `parent`.
-bool fillsSlot(const IAST & parent, const char * key, const IAST & fragment)
+/// Whether a fragment fills the slot `slot_key` of `parent`, or, for a null key, is an element of the
+/// list `parent`.
+bool fillsSlot(const IAST & parent, const char * slot_key, const IAST & fragment)
 {
     const IAST & node = *fragmentNode(fragment);
-    const std::string_view slot = key ? key : "";
+    const std::string_view slot = slot_key ? slot_key : "";
     if (parent.as<ASTCreateQuery>())
         return (slot == "refresh_strategy" && node.as<ASTRefreshStrategy>()) || (slot == "dictionary" && node.as<ASTDictionary>())
             || ((slot == "storage" || slot == "inner_engine") && node.as<ASTStorage>());
     if (parent.as<ASTAlterQuery>())
         return slot == "command_list" && node.as<ASTExpressionList>();
     if (parent.as<ASTExpressionList>())
-        return !key && node.as<ASTAlterCommand>();
+        return !slot_key && node.as<ASTAlterCommand>();
     if (parent.as<ASTAlterCommand>())
         return slot == "refresh" && node.as<ASTRefreshStrategy>();
     return false;
 }
 
-/// Empties the slot `key` of a part of a statement, which a failure after the slot parsed - a missing
-/// `)` - leaves set: the `Error` takes the place of what parsed there, as it does of a broken
-/// expression, and the key is written once.
+/// The slots of a node that a capture may name, and how to empty each one. A slot is written only when it
+/// is set, and a failed slot is empty, so the `Error` is the only value that its key gets. The
+/// slot is emptied for a failure after the slot parsed, a missing `)`, which leaves it set: the `Error` takes
+/// the place of what parsed there, as it does of a broken expression. A slot with no `reset` has nothing to empty.
+template <typename Node>
+struct Slot
+{
+    std::string_view key;
+    void (*reset)(Node &);
+};
+
+#define RESET_CHILD(Node, field) \
+    Slot<Node> \
+    { \
+        #field, [](Node & node) { node.reset(node.field); } \
+    }
+#define RESET_STRING(Node, field) \
+    Slot<Node> \
+    { \
+        #field, [](Node & node) { node.field.clear(); } \
+    }
+#define KEEP(Node, key) \
+    Slot<Node> { key, nullptr }
+
+const Slot<ASTInsertQuery> INSERT_SLOTS[]
+    = {KEEP(ASTInsertQuery, "table"),
+       KEEP(ASTInsertQuery, "table_function"),
+       KEEP(ASTInsertQuery, "partition_by"),
+       KEEP(ASTInsertQuery, "infile"),
+       KEEP(ASTInsertQuery, "compression"),
+       RESET_CHILD(ASTInsertQuery, settings_ast),
+       KEEP(ASTInsertQuery, "format"),
+       KEEP(ASTInsertQuery, "columns"),
+       KEEP(ASTInsertQuery, "select")};
+
+const Slot<ASTCreateQuery> CREATE_SLOTS[]
+    = {KEEP(ASTCreateQuery, "table_ast"),
+       KEEP(ASTCreateQuery, "cluster"),
+       KEEP(ASTCreateQuery, "columns_list"),
+       KEEP(ASTCreateQuery, "storage"),
+       KEEP(ASTCreateQuery, "select"),
+       /// `AS remote(` parses `remote` as a table name after the table function failed.
+       Slot<ASTCreateQuery>{
+           "as_table_function",
+           [](ASTCreateQuery & node)
+           {
+               node.as_database.clear();
+               node.as_table.clear();
+           }},
+       KEEP(ASTCreateQuery, "aliases_list"),
+       KEEP(ASTCreateQuery, "refresh_strategy"),
+       KEEP(ASTCreateQuery, "targets"),
+       KEEP(ASTCreateQuery, "sql_security"),
+       KEEP(ASTCreateQuery, "comment"),
+       KEEP(ASTCreateQuery, "dictionary_attributes_list"),
+       KEEP(ASTCreateQuery, "dictionary"),
+       KEEP(ASTCreateQuery, "as_table"),
+       KEEP(ASTCreateQuery, "attach_from_path"),
+       Slot<ASTCreateQuery>{"attach_as_replicated", [](ASTCreateQuery & node) { node.attach_as_replicated.reset(); }}};
+
+const Slot<ASTAlterQuery> ALTER_SLOTS[]
+    = {KEEP(ASTAlterQuery, "database_ast"),
+       KEEP(ASTAlterQuery, "table_ast"),
+       KEEP(ASTAlterQuery, "cluster"),
+       KEEP(ASTAlterQuery, "command_list")};
+
+const Slot<ASTAlterCommand> ALTER_COMMAND_SLOTS[]
+    = {RESET_CHILD(ASTAlterCommand, col_decl),
+       RESET_CHILD(ASTAlterCommand, column),
+       RESET_CHILD(ASTAlterCommand, order_by),
+       RESET_CHILD(ASTAlterCommand, sample_by),
+       RESET_CHILD(ASTAlterCommand, index_decl),
+       RESET_CHILD(ASTAlterCommand, index),
+       RESET_CHILD(ASTAlterCommand, constraint_decl),
+       RESET_CHILD(ASTAlterCommand, constraint),
+       RESET_CHILD(ASTAlterCommand, projection_decl),
+       RESET_CHILD(ASTAlterCommand, projection),
+       RESET_CHILD(ASTAlterCommand, statistics_decl),
+       RESET_CHILD(ASTAlterCommand, partition),
+       RESET_CHILD(ASTAlterCommand, partitions),
+       RESET_CHILD(ASTAlterCommand, predicate),
+       RESET_CHILD(ASTAlterCommand, update_assignments),
+       RESET_CHILD(ASTAlterCommand, comment),
+       RESET_CHILD(ASTAlterCommand, ttl),
+       RESET_CHILD(ASTAlterCommand, settings_changes),
+       RESET_CHILD(ASTAlterCommand, settings_resets),
+       RESET_CHILD(ASTAlterCommand, select),
+       RESET_CHILD(ASTAlterCommand, sql_security),
+       RESET_CHILD(ASTAlterCommand, rename_to),
+       RESET_CHILD(ASTAlterCommand, refresh),
+       RESET_CHILD(ASTAlterCommand, snapshot_desc),
+       RESET_CHILD(ASTAlterCommand, execute_args),
+       RESET_CHILD(ASTAlterCommand, add_enum_values),
+       RESET_STRING(ASTAlterCommand, move_destination_name),
+       RESET_STRING(ASTAlterCommand, from),
+       RESET_STRING(ASTAlterCommand, with_name),
+       RESET_STRING(ASTAlterCommand, from_table),
+       RESET_STRING(ASTAlterCommand, to_table),
+       RESET_STRING(ASTAlterCommand, snapshot_name),
+       RESET_STRING(ASTAlterCommand, execute_command_name),
+       RESET_STRING(ASTAlterCommand, remove_property)};
+
+const Slot<ASTStorage> STORAGE_SLOTS[]
+    = {RESET_CHILD(ASTStorage, engine),
+       RESET_CHILD(ASTStorage, partition_by),
+       RESET_CHILD(ASTStorage, primary_key),
+       RESET_CHILD(ASTStorage, order_by),
+       RESET_CHILD(ASTStorage, unique_key),
+       RESET_CHILD(ASTStorage, sample_by),
+       RESET_CHILD(ASTStorage, ttl_table),
+       RESET_CHILD(ASTStorage, settings)};
+
+const Slot<ASTDictionary> DICTIONARY_SLOTS[]
+    = {RESET_CHILD(ASTDictionary, primary_key),
+       RESET_CHILD(ASTDictionary, source),
+       RESET_CHILD(ASTDictionary, lifetime),
+       RESET_CHILD(ASTDictionary, layout),
+       RESET_CHILD(ASTDictionary, range),
+       RESET_CHILD(ASTDictionary, dict_settings)};
+
+const Slot<ASTRefreshStrategy> REFRESH_STRATEGY_SLOTS[]
+    = {KEEP(ASTRefreshStrategy, "period"),
+       KEEP(ASTRefreshStrategy, "offset"),
+       KEEP(ASTRefreshStrategy, "spread"),
+       KEEP(ASTRefreshStrategy, "dependencies"),
+       KEEP(ASTRefreshStrategy, "settings")};
+
+#undef RESET_CHILD
+#undef RESET_STRING
+#undef KEEP
+
+/// Calls `f(typed_node, slots)` with the slots of the type of `node`; false if the type has none.
+template <typename Ast, typename F>
+bool withSlots(Ast & node, F && f)
+{
+    if (auto * insert = node.template as<ASTInsertQuery>())
+        f(*insert, INSERT_SLOTS);
+    else if (auto * create = node.template as<ASTCreateQuery>())
+        f(*create, CREATE_SLOTS);
+    else if (auto * alter = node.template as<ASTAlterQuery>())
+        f(*alter, ALTER_SLOTS);
+    else if (auto * command = node.template as<ASTAlterCommand>())
+        f(*command, ALTER_COMMAND_SLOTS);
+    else if (auto * storage = node.template as<ASTStorage>())
+        f(*storage, STORAGE_SLOTS);
+    else if (auto * dictionary = node.template as<ASTDictionary>())
+        f(*dictionary, DICTIONARY_SLOTS);
+    else if (auto * refresh = node.template as<ASTRefreshStrategy>())
+        f(*refresh, REFRESH_STRATEGY_SLOTS);
+    else
+        return false;
+    return true;
+}
+
 void resetSlot(IAST & node, std::string_view key)
 {
-    auto clear = [&]<typename T>(T *& field)
-    {
-        const IAST * slot = field;
-        node.children.erase(
-            std::remove_if(node.children.begin(), node.children.end(), [&](const ASTPtr & child) { return child.get() == slot; }),
-            node.children.end());
-        field = nullptr;
-    };
-
-    if (auto * storage = node.as<ASTStorage>())
-    {
-        if (key == "engine")
-            clear(storage->engine);
-        else if (key == "partition_by")
-            clear(storage->partition_by);
-        else if (key == "primary_key")
-            clear(storage->primary_key);
-        else if (key == "order_by")
-            clear(storage->order_by);
-        else if (key == "unique_key")
-            clear(storage->unique_key);
-        else if (key == "sample_by")
-            clear(storage->sample_by);
-        else if (key == "ttl_table")
-            clear(storage->ttl_table);
-        else if (key == "settings")
-            clear(storage->settings);
-    }
-    else if (auto * command = node.as<ASTAlterCommand>())
-    {
-        static const std::pair<std::string_view, IAST * ASTAlterCommand::*> members[] = {
-            {"col_decl", &ASTAlterCommand::col_decl}, {"column", &ASTAlterCommand::column},
-            {"order_by", &ASTAlterCommand::order_by}, {"sample_by", &ASTAlterCommand::sample_by},
-            {"index_decl", &ASTAlterCommand::index_decl}, {"index", &ASTAlterCommand::index},
-            {"constraint_decl", &ASTAlterCommand::constraint_decl}, {"constraint", &ASTAlterCommand::constraint},
-            {"projection_decl", &ASTAlterCommand::projection_decl}, {"projection", &ASTAlterCommand::projection},
-            {"statistics_decl", &ASTAlterCommand::statistics_decl}, {"partition", &ASTAlterCommand::partition},
-            {"partitions", &ASTAlterCommand::partitions}, {"predicate", &ASTAlterCommand::predicate},
-            {"update_assignments", &ASTAlterCommand::update_assignments}, {"comment", &ASTAlterCommand::comment},
-            {"ttl", &ASTAlterCommand::ttl}, {"settings_changes", &ASTAlterCommand::settings_changes},
-            {"settings_resets", &ASTAlterCommand::settings_resets}, {"select", &ASTAlterCommand::select},
-            {"sql_security", &ASTAlterCommand::sql_security}, {"rename_to", &ASTAlterCommand::rename_to},
-            {"refresh", &ASTAlterCommand::refresh}, {"snapshot_desc", &ASTAlterCommand::snapshot_desc},
-            {"execute_args", &ASTAlterCommand::execute_args}};
-        static const std::pair<std::string_view, String ASTAlterCommand::*> strings[] = {
-            {"move_destination_name", &ASTAlterCommand::move_destination_name}, {"from", &ASTAlterCommand::from},
-            {"with_name", &ASTAlterCommand::with_name}, {"from_table", &ASTAlterCommand::from_table},
-            {"to_table", &ASTAlterCommand::to_table}, {"snapshot_name", &ASTAlterCommand::snapshot_name},
-            {"execute_command_name", &ASTAlterCommand::execute_command_name},
-            {"remove_property", &ASTAlterCommand::remove_property}};
-        for (const auto & [name, member] : members)
-            if (name == key)
-                clear(command->*member);
-        for (const auto & [name, member] : strings)
-            if (name == key)
-                (command->*member).clear();
-        if (key == "add_enum_values" && command->add_enum_values)
+    withSlots(
+        node,
+        [&](auto & typed, const auto & slots)
         {
-            IAST * values = command->add_enum_values.get();
-            clear(values);
-            command->add_enum_values = nullptr;
-        }
-    }
-    else if (auto * insert = node.as<ASTInsertQuery>())
-    {
-        if (key == "settings_ast" && insert->settings_ast)
-        {
-            IAST * settings = insert->settings_ast.get();
-            clear(settings);
-            insert->settings_ast = nullptr;
-        }
-    }
-    else if (auto * create = node.as<ASTCreateQuery>())
-    {
-        if (key == "attach_as_replicated")
-            create->attach_as_replicated.reset();
-        /// `AS remote(` parses `remote` as a table name after the table function failed.
-        if (key == "as_table_function")
-        {
-            create->as_database.clear();
-            create->as_table.clear();
-        }
-    }
-    else if (auto * dictionary = node.as<ASTDictionary>())
-    {
-        if (key == "primary_key")
-            clear(dictionary->primary_key);
-        else if (key == "source")
-            clear(dictionary->source);
-        else if (key == "lifetime")
-            clear(dictionary->lifetime);
-        else if (key == "layout")
-            clear(dictionary->layout);
-        else if (key == "range")
-            clear(dictionary->range);
-        else if (key == "dict_settings")
-            clear(dictionary->dict_settings);
-    }
+            for (const auto & slot : slots)
+                if (slot.key == key && slot.reset)
+                    slot.reset(typed);
+        });
 }
 
 /// What goes into the slot that failed: the fragment captured inside it at this position, if any, and
-/// otherwise a new `Error`. A fragment is taken once.
-ASTPtr takeFragment(PartialASTState & state, const Expected & expected, const IAST & parent, const char * key)
+/// otherwise null. A fragment is taken once.
+ASTPtr takeFragment(PartialASTState & state, const Expected & expected, const IAST & parent, const char * slot_key)
 {
-    if (state.fragment && state.fragment_pos == expected.max_parsed_pos
-        && fillsSlot(parent, key, *state.fragment))
+    if (state.fragment && state.fragment_pos == expected.max_parsed_pos && fillsSlot(parent, slot_key, *state.fragment))
         return std::exchange(state.fragment, nullptr);
     return nullptr;
 }
 
-ASTPtr wrap(ASTPtr node, ASTPtr inner, const char * key)
+ASTPtr wrapInPartialNode(ASTPtr node, ASTPtr failed_value, const char * failed_key)
 {
-    auto wrapper = make_intrusive<ASTPartialStatement>();
-    wrapper->statement = std::move(node);
-    wrapper->error = std::move(inner);
-    wrapper->key = key;
-    wrapper->children = {wrapper->statement, wrapper->error};
+    auto wrapper = make_intrusive<ASTPartialNode>();
+    wrapper->node = std::move(node);
+    wrapper->failed_value = std::move(failed_value);
+    wrapper->failed_key = failed_key;
+    wrapper->children = {wrapper->node, wrapper->failed_value};
     return wrapper;
+}
+
+enum class ColumnListKind : size_t
+{
+    Columns,
+    Indices,
+    Constraints,
+    Projections,
+};
+
+std::array<ASTExpressionList *, 4> columnLists(const ASTColumns & list)
+{
+    return {list.columns, list.indices, list.constraints, list.projections};
 }
 
 /// Whether the list of a `CREATE TABLE` holds columns only, so that what failed after it is the
@@ -289,10 +373,10 @@ void movePrimaryKeyToStorage(ASTCreateQuery & create, const IAST & inner, std::s
     ASTStorage * storage = nullptr;
     if (key == "storage" || key == "inner_engine")
     {
-        const auto * wrapper = inner.as<ASTPartialStatement>();
-        if (!wrapper || std::string_view(wrapper->key) == "primary_key")
+        const auto * wrapper = inner.as<ASTPartialNode>();
+        if (!wrapper || std::string_view(wrapper->failed_key) == "primary_key")
             return;
-        storage = wrapper->statement->as<ASTStorage>();
+        storage = wrapper->node->as<ASTStorage>();
     }
     else if (create.is_materialized_view)
     {
@@ -330,7 +414,37 @@ void movePrimaryKeyToStorage(ASTCreateQuery & create, const IAST & inner, std::s
 
 }
 
-void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos pos, ASTSelectQuery::Expression slot)
+bool canCapturePartialAST(const Expected & expected)
+{
+    chassert(expected.partial_ast);
+    PartialASTState & state = *expected.partial_ast;
+
+    if (state.tree_pos && expected.max_parsed_pos < state.tree_pos)
+        return false;
+
+    if (unlikely(getStackSizeHeadroom() < MIN_CAPTURE_STACK_HEADROOM))
+    {
+        /// Nothing is cloned here, and nothing around it at this position is taken. A capture already
+        /// taken at this position is kept.
+        if (!state.tree_pos || expected.max_parsed_pos > state.tree_pos)
+            blockCaptures(state, expected);
+        return false;
+    }
+
+    return true;
+}
+
+bool isPartialASTSlotKey(const IAST & node, std::string_view key)
+{
+    bool found = false;
+    withSlots(
+        node,
+        [&](const auto &, const auto & slots)
+        { found = std::any_of(std::begin(slots), std::end(slots), [&](const auto & slot) { return slot.key == key; }); });
+    return found;
+}
+
+void capturePartialAST(Expected & expected, const ASTPtr & node, IParser::Pos pos, ASTSelectQuery::Expression slot)
 {
     chassert(expected.partial_ast);
     PartialASTState & state = *expected.partial_ast;
@@ -338,17 +452,22 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
     /// A `SELECT` of the union of an `INSERT` - not nested in another `SELECT` of it - gets the `WITH`
     /// written before the `INSERT`, where `ast` has it, unless it has a `WITH` of its own.
     const IAST * outer_with = nullptr;
-    if (node && state.outer_with && state.selects == state.outer_with_selects + 1
-        && !node->as<ASTSelectQuery &>().with())
+    if (node && state.outer_with && state.select_depth == state.outer_with_select_depth + 1 && !node->as<ASTSelectQuery &>().with())
         outer_with = state.outer_with.get();
 
-    if (!startCapture(state, expected, node, /*is_select=*/ true, outer_with))
+    if (!shouldCapture(state, expected, node, /*is_select=*/true, outer_with))
         return;
 
     auto error = makeError(expected, pos);
     ASTPtr partial = node->clone();
     auto & select = partial->as<ASTSelectQuery &>();
-    select.setExpression(slot, ASTPtr(error));
+
+    /// A list of tables that has elements, and failed after them, gets the `Error` as one more element.
+    if (slot == ASTSelectQuery::Expression::TABLES && select.tables())
+        select.tables()->children.push_back(error);
+    else
+        select.setExpression(slot, ASTPtr(error));
+
     if (outer_with)
     {
         select.setExpression(ASTSelectQuery::Expression::WITH, outer_with->clone());
@@ -357,7 +476,7 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
     storeCapture(state, expected, std::move(partial));
 }
 
-void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos pos, const char * expected_what)
+void capturePartialAST(Expected & expected, const ASTPtr & node, IParser::Pos pos, const char * slot_key)
 {
     chassert(expected.partial_ast);
     PartialASTState & state = *expected.partial_ast;
@@ -365,80 +484,83 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
     if (!node)
         return;
 
-    ASTPtr fragment = takeFragment(state, expected, *node, expected_what);
-    if (!startCapture(state, expected, node, /*is_select=*/ false, fragment.get()))
+    ASTPtr fragment = takeFragment(state, expected, *node, slot_key);
+    if (!shouldCapture(state, expected, node, /*is_select=*/false, fragment.get()))
         return;
 
-    const std::string_view what = expected_what;
+    const std::string_view key = slot_key;
 
     /// Where in the list of a `CREATE` an `Error` after it goes: after the element written last, whose
     /// list is found in the tree the parser built, as the order of the lists is not in it.
-    std::optional<size_t> column_list_kind;
-    if (const auto * create = node->as<ASTCreateQuery>(); create && what == "columns_list" && create->columns_list)
+    std::optional<ColumnListKind> column_list_kind;
+    if (const auto * create = node->as<ASTCreateQuery>(); create && key == "columns_list" && create->columns_list)
     {
-        const IAST * last = state.last_column_element.get();
         const auto & list = *create->columns_list;
-        const ASTExpressionList * kinds[] = {list.columns, list.indices, list.constraints, list.projections};
-        for (size_t kind = 0; kind < std::size(kinds); ++kind)
-            if (kinds[kind] && !kinds[kind]->children.empty() && kinds[kind]->children.back().get() == last)
-                column_list_kind = kind;
         if (hasOnlyColumns(list))
-            column_list_kind = 0;
+        {
+            column_list_kind = ColumnListKind::Columns;
+        }
+        else
+        {
+            const auto lists = columnLists(list);
+            for (size_t kind = 0; kind < lists.size(); ++kind)
+                if (lists[kind] && !lists[kind]->children.empty() && lists[kind]->children.back().get() == state.last_column_element.get())
+                    column_list_kind = static_cast<ColumnListKind>(kind);
+        }
     }
 
-    ASTPtr inner = fragment ? fragment : makeError(expected, pos);
+    ASTPtr failed_value = fragment ? fragment : makeError(expected, pos);
     ASTPtr partial = node->clone();
     auto * insert = partial->as<ASTInsertQuery>();
     auto * create = partial->as<ASTCreateQuery>();
     bool placed = false;
-    if (insert && what == "columns" && insert->columns && insert->columns->as<ASTExpressionList>())
+    if (insert && key == "columns" && insert->columns && insert->columns->as<ASTExpressionList>())
     {
         /// The list parsed and its `)` is missing: what failed is the element after the last one.
-        insert->columns->children.push_back(inner);
+        insert->columns->children.push_back(failed_value);
         placed = true;
     }
-    else if (create && what == "aliases_list" && create->aliases_list)
+    else if (create && key == "aliases_list" && create->aliases_list)
     {
-        create->aliases_list->children.push_back(inner);
+        create->aliases_list->children.push_back(failed_value);
         placed = true;
     }
-    else if (create && what == "dictionary_attributes_list" && create->dictionary_attributes_list)
+    else if (create && key == "dictionary_attributes_list" && create->dictionary_attributes_list)
     {
-        create->dictionary_attributes_list->children.push_back(inner);
+        create->dictionary_attributes_list->children.push_back(failed_value);
         placed = true;
     }
-    else if (create && what == "columns_list" && create->columns_list)
+    else if (create && key == "columns_list" && create->columns_list)
     {
         /// Likewise for `CREATE TABLE t (a UInt8,`. Without the element written last - a `PRIMARY KEY`
         /// or a foreign key, which the list does not keep - the whole list is what failed.
-        auto & list = *create->columns_list;
-        ASTExpressionList * kinds[] = {list.columns, list.indices, list.constraints, list.projections};
         if (column_list_kind)
         {
-            kinds[*column_list_kind]->children.push_back(inner);
+            columnLists(*create->columns_list)[static_cast<size_t>(*column_list_kind)]->children.push_back(failed_value);
             placed = true;
         }
         else
+        {
             create->reset(create->columns_list);
+        }
     }
-    else if (create && what == "inner_engine")
+    else if (create && key == "inner_engine")
     {
         /// The storage of a materialized view, which `ast` has as the inner engine of its `To` target.
         if (!create->targets)
             create->set(create->targets, make_intrusive<ASTViewTargets>());
-        create->targets->setInnerEngine(ViewTarget::To, inner);
+        create->targets->setInnerEngine(ViewTarget::To, failed_value);
         placed = true;
     }
 
     if (create)
     {
-        movePrimaryKeyToStorage(*create, *inner, what);
+        movePrimaryKeyToStorage(*create, *failed_value, key);
 
         /// The success path marks a `TimeSeries` table as soon as its storage parses; a storage that
         /// failed after its engine is that table as well.
-        if (const auto * wrapper = inner->as<ASTPartialStatement>(); wrapper && what == "storage")
-            if (const auto * storage = wrapper->statement->as<ASTStorage>(); storage && storage->engine
-                && storage->engine->name == "TimeSeries")
+        if (const auto * wrapper = failed_value->as<ASTPartialNode>(); wrapper && key == "storage")
+            if (const auto * storage = wrapper->node->as<ASTStorage>(); storage && storage->engine && storage->engine->name == "TimeSeries")
                 create->is_time_series_table = true;
     }
 
@@ -447,11 +569,17 @@ void snapshotPartialAST(Expected & expected, const ASTPtr & node, IParser::Pos p
         storeCapture(state, expected, std::move(partial));
         return;
     }
-    resetSlot(*partial, what);
-    storeCapture(state, expected, wrap(std::move(partial), std::move(inner), expected_what));
+
+    chassert(isPartialASTSlotKey(*partial, key));
+    resetSlot(*partial, key);
+    storeCapture(state, expected, wrapInPartialNode(std::move(partial), std::move(failed_value), slot_key));
 }
 
-void snapshotPartialFragment(Expected & expected, const ASTPtr & node, IParser::Pos pos, const char * expected_what)
+namespace
+{
+
+/// `slot_key` is null for an element of the list `node`.
+void capturePartialFragmentImpl(Expected & expected, const ASTPtr & node, IParser::Pos pos, const char * slot_key)
 {
     chassert(expected.partial_ast);
     PartialASTState & state = *expected.partial_ast;
@@ -460,16 +588,16 @@ void snapshotPartialFragment(Expected & expected, const ASTPtr & node, IParser::
         return;
 
     /// Nothing around a statement captured at this position or further is taken, so no part of it is.
-    if (state.pos && expected.max_parsed_pos <= state.pos)
+    if (state.tree_pos && expected.max_parsed_pos <= state.tree_pos)
         return;
 
-    ASTPtr inner = takeFragment(state, expected, *node, expected_what);
+    ASTPtr inner = takeFragment(state, expected, *node, slot_key);
 
     /// An empty list with nothing in it that captured is not a part: the slot of the list is what failed.
-    if (!expected_what && !inner && node->children.empty())
+    if (!slot_key && !inner && node->children.empty())
         return;
 
-    if (!fitsPartialASTLimits(*node, inner.get()))
+    if (!fitsPartialASTLimits(state, *node, inner.get()))
     {
         blockCaptures(state, expected);
         return;
@@ -479,23 +607,37 @@ void snapshotPartialFragment(Expected & expected, const ASTPtr & node, IParser::
         inner = makeError(expected, pos);
     ASTPtr partial = node->clone();
     auto * dictionary = partial->as<ASTDictionary>();
-    if (!expected_what)
+    if (!slot_key)
     {
         partial->children.push_back(std::move(inner));
     }
-    else if (dictionary && std::string_view(expected_what) == "primary_key" && dictionary->primary_key)
+    else if (dictionary && std::string_view(slot_key) == "primary_key" && dictionary->primary_key)
     {
         /// `PRIMARY KEY (a, b` lacks its `)`: what failed is the element after the last one.
         dictionary->primary_key->children.push_back(std::move(inner));
     }
     else
     {
-        resetSlot(*partial, expected_what);
-        partial = wrap(std::move(partial), std::move(inner), expected_what);
+        chassert(isPartialASTSlotKey(*partial, slot_key));
+        resetSlot(*partial, slot_key);
+        partial = wrapInPartialNode(std::move(partial), std::move(inner), slot_key);
     }
 
     state.fragment = std::move(partial);
     state.fragment_pos = expected.max_parsed_pos;
+}
+
+}
+
+void capturePartialFragment(Expected & expected, const ASTPtr & node, IParser::Pos pos, const char * slot_key)
+{
+    chassert(slot_key);
+    capturePartialFragmentImpl(expected, node, pos, slot_key);
+}
+
+void capturePartialListElement(Expected & expected, const ASTPtr & node, IParser::Pos pos)
+{
+    capturePartialFragmentImpl(expected, node, pos, nullptr);
 }
 
 }

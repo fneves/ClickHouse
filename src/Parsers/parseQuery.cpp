@@ -453,7 +453,7 @@ ASTPtr tryParseQuery(
         diagnostics->expected.highlights.clear();
         diagnostics->error_token = Token{};
         if (diagnostics->expected.partial_ast)
-            *diagnostics->expected.partial_ast = {};
+            diagnostics->expected.partial_ast->clear();
     }
 
     const char * query_begin = _out_query_end;

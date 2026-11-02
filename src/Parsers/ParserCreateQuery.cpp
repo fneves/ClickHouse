@@ -68,6 +68,20 @@ void rejectNilUUIDClause(bool attach, bool has_uuid_clause, const UUID & uuid)
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "ATTACH queries cannot use a Nil UUID");
 }
 
+/// Sets the name of the object, its `UUID` and its identifier children, the same way for the parsed query
+/// and for the partial one of a failed parse.
+void setTableIdentifier(ASTCreateQuery & query, const ASTTableIdentifier & id)
+{
+    query.database = id.getDatabase();
+    query.table = id.getTable();
+    query.uuid = id.uuid;
+    query.has_uuid = id.uuid != UUIDHelpers::Nil;
+    query.has_uuid_clause = id.has_uuid;
+    if (query.database)
+        query.children.push_back(query.database);
+    if (query.table)
+        query.children.push_back(query.table);
+}
 }
 
 bool ParserSQLSecurity::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
@@ -731,7 +745,7 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
 
         if (!ident_with_optional_params_p.parse(pos, engine, expected))
         {
-            PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "engine");
+            PARTIAL_AST_CAPTURE_FRAGMENT(expected, storage_so_far(), pos, "engine");
             return false;
         }
         storage_like = true;
@@ -746,7 +760,7 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 storage_like = true;
                 continue;
             }
-            PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "partition_by");
+            PARTIAL_AST_CAPTURE_FRAGMENT(expected, storage_so_far(), pos, "partition_by");
             return false;
         }
 
@@ -757,7 +771,7 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 storage_like = true;
                 continue;
             }
-            PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "primary_key");
+            PARTIAL_AST_CAPTURE_FRAGMENT(expected, storage_so_far(), pos, "primary_key");
             return false;
         }
 
@@ -768,7 +782,7 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 storage_like = true;
                 continue;
             }
-            PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "order_by");
+            PARTIAL_AST_CAPTURE_FRAGMENT(expected, storage_so_far(), pos, "order_by");
             return false;
         }
 
@@ -779,7 +793,7 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 storage_like = true;
                 continue;
             }
-            PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "unique_key");
+            PARTIAL_AST_CAPTURE_FRAGMENT(expected, storage_so_far(), pos, "unique_key");
             return false;
         }
 
@@ -790,7 +804,7 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 storage_like = true;
                 continue;
             }
-            PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "sample_by");
+            PARTIAL_AST_CAPTURE_FRAGMENT(expected, storage_so_far(), pos, "sample_by");
             return false;
         }
 
@@ -801,7 +815,7 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
                 storage_like = true;
                 continue;
             }
-            PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "ttl_table");
+            PARTIAL_AST_CAPTURE_FRAGMENT(expected, storage_so_far(), pos, "ttl_table");
             return false;
         }
 
@@ -813,7 +827,7 @@ bool ParserStorage::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         {
             if (!settings_p.parse(pos, settings, expected))
             {
-                PARTIAL_AST_FRAGMENT(expected, storage_so_far(), pos, "settings");
+                PARTIAL_AST_CAPTURE_FRAGMENT(expected, storage_so_far(), pos, "settings");
                 return false;
             }
             storage_like = true;
@@ -911,9 +925,8 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
     bool is_create_empty = false;
     bool is_clone_as = false;
 
-    /// Declared further down, after the first capture site; they point there once declared.
-    const std::optional<bool> * attach_as_replicated_so_far = nullptr;
-    const ASTPtr * comment_so_far = nullptr;
+    std::optional<bool> attach_as_replicated;
+    ASTPtr comment;
 
     /// The parts stay in the locals above until the whole query has parsed, so the tree a failure
     /// captures is assembled from them, with the casts the success path makes and without its checks;
@@ -923,8 +936,7 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
     {
         auto partial = make_intrusive<ASTCreateQuery>();
         partial->attach = attach;
-        if (attach_as_replicated_so_far)
-            partial->attach_as_replicated = *attach_as_replicated_so_far;
+        partial->attach_as_replicated = attach_as_replicated;
         partial->replace_table = replace;
         partial->create_or_replace = or_replace;
         partial->if_not_exists = if_not_exists;
@@ -934,18 +946,7 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         partial->is_clone_as = is_clone_as;
         partial->cluster = cluster_str;
         if (table)
-        {
-            const auto & table_id = table->as<ASTTableIdentifier &>();
-            partial->database = table_id.getDatabase();
-            partial->table = table_id.getTable();
-            partial->uuid = table_id.uuid;
-            partial->has_uuid = table_id.uuid != UUIDHelpers::Nil;
-            partial->has_uuid_clause = table_id.has_uuid;
-            if (partial->database)
-                partial->children.push_back(partial->database);
-            if (partial->table)
-                partial->children.push_back(partial->table);
-        }
+            setTableIdentifier(*partial, table->as<ASTTableIdentifier &>());
         partial->has_inner_uuid_clause = to_inner_uuid != nullptr;
         tryGetIdentifierNameInto(as_database, partial->as_database);
         /// After `AS db.`, `as_table` is still the database, until the table name parses.
@@ -955,8 +956,8 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         partial->set(partial->storage, storage);
         partial->set(partial->as_table_function, as_table_function);
         partial->set(partial->select, select);
-        if (comment_so_far && *comment_so_far)
-            partial->set(partial->comment, *comment_so_far);
+        if (comment)
+            partial->set(partial->comment, comment);
         if (sql_security)
             partial->set(partial->sql_security, sql_security);
         UUID inner_uuid = UUIDHelpers::Nil;
@@ -1000,7 +1001,7 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
 
     if (!table_name_p.parse(pos, table, expected))
     {
-        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "table_ast");
+        PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "table_ast");
         return false;
     }
 
@@ -1009,13 +1010,11 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         ParserStringLiteral literal_p;
         if (!literal_p.parse(pos, to_inner_uuid, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "targets");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "targets");
             return false;
         }
     }
 
-    std::optional<bool> attach_as_replicated = std::nullopt;
-    attach_as_replicated_so_far = &attach_as_replicated;
     if (attach)
     {
         if (s_from.ignore(pos, expected))
@@ -1023,7 +1022,7 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
             ParserStringLiteral from_path_p;
             if (!from_path_p.parse(pos, from_path, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "attach_from_path");
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "attach_from_path");
                 return false;
             }
         } else if (s_as.ignore(pos, expected))
@@ -1032,7 +1031,7 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
                 attach_as_replicated = false;
             if (!s_replicated.ignore(pos, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "attach_as_replicated");
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "attach_as_replicated");
                 return false;
             }
             if (!attach_as_replicated.has_value())
@@ -1044,7 +1043,7 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
     {
         if (!ASTQueryWithOnCluster::parse(pos, cluster_str, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "cluster");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "cluster");
             return false;
         }
     }
@@ -1074,19 +1073,10 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         query->if_not_exists = if_not_exists;
         query->cluster = cluster_str;
 
-        query->database = table_id->getDatabase();
-        query->table = table_id->getTable();
-        query->uuid = table_id->uuid;
-        query->has_uuid = table_id->uuid != UUIDHelpers::Nil;
-        query->has_uuid_clause = table_id->has_uuid;
+        setTableIdentifier(*query, *table_id);
         query->setIsTemporary(is_temporary);
 
         query->attach_as_replicated = attach_as_replicated;
-
-        if (query->database)
-            query->children.push_back(query->database);
-        if (query->table)
-            query->children.push_back(query->table);
 
         return true;
     }
@@ -1102,8 +1092,7 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
             /// got further than both the parse before it and its first token: neither
             /// `CREATE TABLE t AS SELECT a FROM` nor `CREATE TABLE t (a UInt8) BLAH` is a failed
             /// storage definition.
-            PARTIAL_AST_SNAPSHOT(
-                expected, expected.max_parsed_pos > std::max(max_before, pos->begin) ? tree_so_far() : nullptr, pos, "storage");
+            PARTIAL_AST_CAPTURE_IF(expected, optionalPartFailed(expected, max_before, pos), tree_so_far(), pos, "storage");
             return false;
         }
 
@@ -1129,16 +1118,13 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
             is_clone_as = true;
     };
 
-    ASTPtr comment;
-    comment_so_far = &comment;
-
     /// List of columns.
     if (s_lparen.ignore(pos, expected))
     {
         /// Columns and all table properties (indices, constraints, projections, primary_key)
         if (!table_properties_p.parse(pos, columns_list, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "columns_list");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "columns_list");
             return false;
         }
 
@@ -1148,7 +1134,7 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
 
         if (!s_rparen.ignore(pos, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "columns_list");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "columns_list");
             return false;
         }
 
@@ -1160,14 +1146,11 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         sql_security_p.parse(pos, sql_security, expected);
         /// Optional, so the parse goes on; captured only if its parser got further than both the parse
         /// before it and its first token. Likewise the comment.
-        PARTIAL_AST_SNAPSHOT(
-            expected, !sql_security && expected.max_parsed_pos > std::max(max_before_sql_security, pos->begin) ? tree_so_far() : nullptr,
-            pos, "sql_security");
+        PARTIAL_AST_CAPTURE_IF(
+            expected, !sql_security && optionalPartFailed(expected, max_before_sql_security, pos), tree_so_far(), pos, "sql_security");
         const char * max_before_comment = expected.max_parsed_pos;
         comment = parseComment(pos, expected);
-        PARTIAL_AST_SNAPSHOT(
-            expected, !comment && expected.max_parsed_pos > std::max(max_before_comment, pos->begin) ? tree_so_far() : nullptr, pos,
-            "comment");
+        PARTIAL_AST_CAPTURE_IF(expected, !comment && optionalPartFailed(expected, max_before_comment, pos), tree_so_far(), pos, "comment");
         try_parse_empty_or_clone();
 
         /// When EMPTY or CLONE was parsed, AS is required; otherwise AS is optional.
@@ -1176,7 +1159,7 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         {
             if (!ParserKeyword{Keyword::AS}.ignore(pos, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "select");
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "select");
                 return false;
             }
             has_as = true;
@@ -1188,7 +1171,7 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         {
             if (!select_p.parse(pos, select, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "select");
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "select");
                 return false;
             }
         }
@@ -1197,7 +1180,7 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         {
             if (!table_function_p.parse(pos, as_table_function, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "as_table_function");
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "as_table_function");
                 return false;
             }
         }
@@ -1217,16 +1200,14 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         sql_security_p.parse(pos, sql_security, expected);
         /// Optional, so the parse goes on; captured only if its parser got further than both the parse
         /// before it and its first token. Likewise the comment.
-        PARTIAL_AST_SNAPSHOT(
-            expected, !sql_security && expected.max_parsed_pos > std::max(max_before_sql_security, pos->begin) ? tree_so_far() : nullptr,
-            pos, "sql_security");
+        PARTIAL_AST_CAPTURE_IF(
+            expected, !sql_security && optionalPartFailed(expected, max_before_sql_security, pos), tree_so_far(), pos, "sql_security");
         if (!comment)
         {
             const char * max_before_comment = expected.max_parsed_pos;
             comment = parseComment(pos, expected);
-            PARTIAL_AST_SNAPSHOT(
-                expected, !comment && expected.max_parsed_pos > std::max(max_before_comment, pos->begin) ? tree_so_far() : nullptr, pos,
-                "comment");
+            PARTIAL_AST_CAPTURE_IF(
+                expected, !comment && optionalPartFailed(expected, max_before_comment, pos), tree_so_far(), pos, "comment");
         }
         try_parse_empty_or_clone();
 
@@ -1236,7 +1217,7 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         {
             if (!ParserKeyword{Keyword::AS}.ignore(pos, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "select");
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "select");
                 return false;
             }
             has_as = true;
@@ -1256,7 +1237,7 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
                     /// AS [db.]table
                     if (!name_p.parse(pos, as_table, expected))
                     {
-                        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "select");
+                        PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "select");
                         return false;
                     }
 
@@ -1265,17 +1246,19 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
                         as_database = as_table;
                         if (!name_p.parse(pos, as_table, expected))
                         {
-                            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "as_table");
+                            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "as_table");
                             return false;
                         }
                     }
 
                     /// The table function was tried first, and the name parsed instead: it failed if its
                     /// parser got further than the name and than the parse before it (`AS remote(`).
-                    PARTIAL_AST_SNAPSHOT(
+                    PARTIAL_AST_CAPTURE_IF(
                         expected,
-                        !storage && expected.max_parsed_pos > std::max(max_before_function, pos->begin) ? tree_so_far() : nullptr,
-                        pos, "as_table_function");
+                        !storage && optionalPartFailed(expected, max_before_function, pos),
+                        tree_so_far(),
+                        pos,
+                        "as_table_function");
 
                     /// Optional - ENGINE can be specified.
                     if (!storage)
@@ -1290,10 +1273,8 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
         const char * max_before_comment = expected.max_parsed_pos;
         auto select_comment = parseComment(pos, expected);
         /// Likewise optional; not where a comment before `AS` parsed, which the success path rejects.
-        PARTIAL_AST_SNAPSHOT(
-            expected,
-            !comment && !select_comment && expected.max_parsed_pos > std::max(max_before_comment, pos->begin) ? tree_so_far() : nullptr,
-            pos, "comment");
+        PARTIAL_AST_CAPTURE_IF(
+            expected, !comment && !select_comment && optionalPartFailed(expected, max_before_comment, pos), tree_so_far(), pos, "comment");
         if (comment && select_comment)
             throw Exception(
                 ErrorCodes::SYNTAX_ERROR,
@@ -1305,9 +1286,7 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
     {
         const char * max_before_comment = expected.max_parsed_pos;
         comment = parseComment(pos, expected);
-        PARTIAL_AST_SNAPSHOT(
-            expected, !comment && expected.max_parsed_pos > std::max(max_before_comment, pos->begin) ? tree_so_far() : nullptr, pos,
-            "comment");
+        PARTIAL_AST_CAPTURE_IF(expected, !comment && optionalPartFailed(expected, max_before_comment, pos), tree_so_far(), pos, "comment");
     }
 
     /// `AS table` and `AS table_function` are formatted before the SQL SECURITY clause position,
@@ -1326,18 +1305,9 @@ bool ParserCreateTableQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expe
     query->setIsTemporary(is_temporary);
     query->is_time_series_table = is_time_series_table;
 
-    query->database = table_id->getDatabase();
-    query->table = table_id->getTable();
-    query->uuid = table_id->uuid;
-    query->has_uuid = table_id->uuid != UUIDHelpers::Nil;
-    query->has_uuid_clause = table_id->has_uuid;
+    setTableIdentifier(*query, *table_id);
     query->has_inner_uuid_clause = to_inner_uuid != nullptr;
     query->cluster = cluster_str;
-
-    if (query->database)
-        query->children.push_back(query->database);
-    if (query->table)
-        query->children.push_back(query->table);
 
     query->set(query->columns_list, columns_list);
     query->set(query->storage, storage);
@@ -1698,8 +1668,7 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
     bool replace_view = false;
     bool is_temporary = false;
 
-    /// Declared further down, after the first capture site; it points there once declared.
-    const ASTPtr * comment_so_far = nullptr;
+    ASTPtr comment;
 
     /// The parts stay in the locals above until the whole query has parsed, so the tree a failure
     /// captures is assembled from them, the way the success path assembles it, without its checks;
@@ -1717,24 +1686,13 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         partial->setIsTemporary(is_temporary);
         partial->cluster = cluster_str;
         if (table)
-        {
-            const auto & table_id = table->as<ASTTableIdentifier &>();
-            partial->database = table_id.getDatabase();
-            partial->table = table_id.getTable();
-            partial->uuid = table_id.uuid;
-            partial->has_uuid = table_id.uuid != UUIDHelpers::Nil;
-            partial->has_uuid_clause = table_id.has_uuid;
-            if (partial->database)
-                partial->children.push_back(partial->database);
-            if (partial->table)
-                partial->children.push_back(partial->table);
-        }
+            setTableIdentifier(*partial, table->as<ASTTableIdentifier &>());
         partial->set(partial->columns_list, columns_list);
         partial->set(partial->aliases_list, aliases_list);
         if (refresh_strategy)
             partial->set(partial->refresh_strategy, refresh_strategy);
-        if (comment_so_far && *comment_so_far)
-            partial->set(partial->comment, *comment_so_far);
+        if (comment)
+            partial->set(partial->comment, comment);
         if (sql_security)
             partial->set(partial->sql_security, sql_security);
         UUID inner_uuid = UUIDHelpers::Nil;
@@ -1792,7 +1750,7 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
 
     if (!table_name_p.parse(pos, table, expected))
     {
-        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "table_ast");
+        PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "table_ast");
         return false;
     }
 
@@ -1800,7 +1758,7 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
     {
         if (!ASTQueryWithOnCluster::parse(pos, cluster_str, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "cluster");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "cluster");
             return false;
         }
     }
@@ -1810,12 +1768,12 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         // REFRESH only with materialized views
         if (!is_materialized_view)
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "refresh_strategy");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "refresh_strategy");
             return false;
         }
         if (!ParserRefreshStrategy{}.parse(pos, refresh_strategy, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "refresh_strategy");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "refresh_strategy");
             return false;
         }
     }
@@ -1825,7 +1783,7 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         ParserStringLiteral literal_p;
         if (!literal_p.parse(pos, to_inner_uuid, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "targets");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "targets");
             return false;
         }
     }
@@ -1834,7 +1792,7 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         // TO [db.]table
         if (!table_name_p.parse(pos, to_table, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "targets");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "targets");
             return false;
         }
     }
@@ -1847,7 +1805,7 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         {
             if (!expr_list_aliases.parse(pos, aliases_list, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "columns_list");
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "columns_list");
                 return false;
             }
             else
@@ -1857,7 +1815,7 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         {
             if (!s_rparen.ignore(pos, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "columns_list");
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "columns_list");
                 return false;
             }
             if (s_lparen.ignore(pos, expected))
@@ -1865,7 +1823,7 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
                 has_aliases = true;
                 if (!expr_list_aliases.parse(pos, aliases_list, expected))
                 {
-                    PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "aliases_list");
+                    PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "aliases_list");
                     return false;
                 }
             }
@@ -1874,7 +1832,7 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         if (has_aliases)
             if (!s_rparen.ignore(pos, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "aliases_list");
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "aliases_list");
                 return false;
             }
     }
@@ -1889,9 +1847,7 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
             storage_p.parse(pos, storage, expected);
             /// Optional, so the parse goes on; captured only if the storage parser got further than both
             /// the parse before it and its first token.
-            PARTIAL_AST_SNAPSHOT(
-                expected, !storage && expected.max_parsed_pos > std::max(max_before, pos->begin) ? tree_so_far() : nullptr, pos,
-                "inner_engine");
+            PARTIAL_AST_CAPTURE_IF(expected, !storage && optionalPartFailed(expected, max_before, pos), tree_so_far(), pos, "inner_engine");
 
             if (s_populate.ignore(pos, expected))
                 is_populate = true;
@@ -1926,9 +1882,8 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
         const char * max_before = expected.max_parsed_pos;
         sql_security_p.parse(pos, sql_security, expected);
         /// Likewise optional.
-        PARTIAL_AST_SNAPSHOT(
-            expected, !sql_security && expected.max_parsed_pos > std::max(max_before, pos->begin) ? tree_so_far() : nullptr, pos,
-            "sql_security");
+        PARTIAL_AST_CAPTURE_IF(
+            expected, !sql_security && optionalPartFailed(expected, max_before, pos), tree_so_far(), pos, "sql_security");
     }
 
     /// Accept both "POPULATE/EMPTY COMMENT" and "COMMENT POPULATE/EMPTY" orderings for materialized views.
@@ -1960,11 +1915,9 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
 
     try_parse_populate_or_empty();
     const char * max_before_comment = expected.max_parsed_pos;
-    auto comment = parseComment(pos, expected);
-    comment_so_far = &comment;
+    comment = parseComment(pos, expected);
     /// Likewise optional.
-    PARTIAL_AST_SNAPSHOT(
-        expected, !comment && expected.max_parsed_pos > std::max(max_before_comment, pos->begin) ? tree_so_far() : nullptr, pos, "comment");
+    PARTIAL_AST_CAPTURE_IF(expected, !comment && optionalPartFailed(expected, max_before_comment, pos), tree_so_far(), pos, "comment");
     try_parse_populate_or_empty();
 
     /// The first refresh of a refreshable materialized view already fills it with data, so 'POPULATE'
@@ -1978,23 +1931,25 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
     /// AS SELECT ...
     if (!s_as.ignore(pos, expected))
     {
-        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "select");
+        PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "select");
         return false;
     }
 
     if (!select_p.parse(pos, select, expected))
     {
-        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "select");
+        PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "select");
         return false;
     }
 
     const char * max_before_select_comment = expected.max_parsed_pos;
     auto select_comment = parseComment(pos, expected);
     /// Optional; not where a comment before `AS SELECT` parsed, which the success path rejects.
-    PARTIAL_AST_SNAPSHOT(
+    PARTIAL_AST_CAPTURE_IF(
         expected,
-        !comment && !select_comment && expected.max_parsed_pos > std::max(max_before_select_comment, pos->begin) ? tree_so_far() : nullptr,
-        pos, "comment");
+        !comment && !select_comment && optionalPartFailed(expected, max_before_select_comment, pos),
+        tree_so_far(),
+        pos,
+        "comment");
     if (comment && select_comment)
         throw Exception(
             ErrorCodes::SYNTAX_ERROR,
@@ -2016,17 +1971,8 @@ bool ParserCreateViewQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expec
 
     auto * table_id = table->as<ASTTableIdentifier>();
     rejectNilUUIDClause(attach, table_id->has_uuid, table_id->uuid);
-    query->database = table_id->getDatabase();
-    query->table = table_id->getTable();
-    query->uuid = table_id->uuid;
-    query->has_uuid = table_id->uuid != UUIDHelpers::Nil;
-    query->has_uuid_clause = table_id->has_uuid;
+    setTableIdentifier(*query, *table_id);
     query->cluster = cluster_str;
-
-    if (query->database)
-        query->children.push_back(query->database);
-    if (query->table)
-        query->children.push_back(query->table);
 
     query->set(query->columns_list, columns_list);
     query->set(query->aliases_list, aliases_list);
@@ -2218,8 +2164,7 @@ bool ParserCreateDictionaryQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, E
 
     bool attach = false;
 
-    /// Declared further down, after the first capture site; it points there once declared.
-    const ASTPtr * comment_so_far = nullptr;
+    ASTPtr comment;
 
     /// The parts stay in the locals above until the whole query has parsed, so the tree a failure
     /// captures is assembled from them, the way the success path assembles it; see
@@ -2234,22 +2179,11 @@ bool ParserCreateDictionaryQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, E
         partial->if_not_exists = if_not_exists;
         partial->cluster = cluster_str;
         if (name)
-        {
-            const auto & dict_id = name->as<ASTTableIdentifier &>();
-            partial->database = dict_id.getDatabase();
-            partial->table = dict_id.getTable();
-            partial->uuid = dict_id.uuid;
-            partial->has_uuid = dict_id.uuid != UUIDHelpers::Nil;
-            partial->has_uuid_clause = dict_id.has_uuid;
-            if (partial->database)
-                partial->children.push_back(partial->database);
-            if (partial->table)
-                partial->children.push_back(partial->table);
-        }
+            setTableIdentifier(*partial, name->as<ASTTableIdentifier &>());
         partial->set(partial->dictionary_attributes_list, attributes);
         partial->set(partial->dictionary, dictionary);
-        if (comment_so_far && *comment_so_far)
-            partial->set(partial->comment, *comment_so_far);
+        if (comment)
+            partial->set(partial->comment, comment);
         return partial;
     };
 
@@ -2276,7 +2210,7 @@ bool ParserCreateDictionaryQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, E
 
     if (!dict_name_p.parse(pos, name, expected))
     {
-        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "table_ast");
+        PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "table_ast");
         return false;
     }
 
@@ -2284,7 +2218,7 @@ bool ParserCreateDictionaryQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, E
     {
         if (!ASTQueryWithOnCluster::parse(pos, cluster_str, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "cluster");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "cluster");
             return false;
         }
     }
@@ -2293,13 +2227,13 @@ bool ParserCreateDictionaryQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, E
     {
         if (!s_left_paren.ignore(pos, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "dictionary_attributes_list");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "dictionary_attributes_list");
             return false;
         }
 
         if (!attributes_p.parse(pos, attributes, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "dictionary_attributes_list");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "dictionary_attributes_list");
             return false;
         }
 
@@ -2309,24 +2243,22 @@ bool ParserCreateDictionaryQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, E
 
         if (!s_right_paren.ignore(pos, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "dictionary_attributes_list");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "dictionary_attributes_list");
             return false;
         }
 
         if (!dictionary_p.parse(pos, dictionary, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "dictionary");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "dictionary");
             return false;
         }
     }
 
     const char * max_before_comment = expected.max_parsed_pos;
-    auto comment = parseComment(pos, expected);
-    comment_so_far = &comment;
+    comment = parseComment(pos, expected);
     /// Optional, so the parse goes on; captured only if the comment parser got further than both the
     /// parse before it and its first token.
-    PARTIAL_AST_SNAPSHOT(
-        expected, !comment && expected.max_parsed_pos > std::max(max_before_comment, pos->begin) ? tree_so_far() : nullptr, pos, "comment");
+    PARTIAL_AST_CAPTURE_IF(expected, !comment && optionalPartFailed(expected, max_before_comment, pos), tree_so_far(), pos, "comment");
 
     auto query = make_intrusive<ASTCreateQuery>();
     node = query;
@@ -2337,16 +2269,7 @@ bool ParserCreateDictionaryQuery::parseImpl(IParser::Pos & pos, ASTPtr & node, E
 
     auto * dict_id = name->as<ASTTableIdentifier>();
     rejectNilUUIDClause(attach, dict_id->has_uuid, dict_id->uuid);
-    query->database = dict_id->getDatabase();
-    query->table = dict_id->getTable();
-    query->uuid = dict_id->uuid;
-    query->has_uuid = dict_id->uuid != UUIDHelpers::Nil;
-    query->has_uuid_clause = dict_id->has_uuid;
-
-    if (query->database)
-        query->children.push_back(query->database);
-    if (query->table)
-        query->children.push_back(query->table);
+    setTableIdentifier(*query, *dict_id);
 
     query->if_not_exists = if_not_exists;
     query->set(query->dictionary_attributes_list, attributes);

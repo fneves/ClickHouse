@@ -44,9 +44,8 @@
 /// "error", the tree it built so far as "partial_ast", with an `Error` node in the slot that failed
 /// (see `Parsers/PartialASTCapture.h`); only a build with formatting has it, it is never present
 /// together with "ast", and `ch_format_json` rejects it. All highlight offsets are byte offsets,
-/// end-exclusive; the types are the
-/// visible names of `enum Highlight` (`keyword`, `identifier`, `function`, `alias`,
-/// `substitution`, `number`, `string`, `string_escape`, `string_metacharacter`).
+/// end-exclusive; the types are the visible names of `enum Highlight` (`keyword`, `identifier`,
+/// `function`, `alias`, `substitution`, `number`, `string`, `string_escape`, `string_metacharacter`).
 
 #include <Formats/FormatSettings.h>
 #include <IO/Operators.h>
@@ -65,7 +64,6 @@
 #include <Parsers/ASTError.h>
 #include <Parsers/ASTSelectQuery.h>
 #include <Parsers/PartialASTCapture.h>
-#include <vector>
 #endif
 
 #include <wasm_sjlj.h>
@@ -76,6 +74,7 @@
 #include <string>
 #include <new>
 #include <utility>
+#include <vector>
 
 namespace DB::ErrorCodes
 {
@@ -336,9 +335,6 @@ extern "C" int serializeBody(void * argument)
     return 1;
 }
 
-static_assert(DB::PARTIAL_AST_MAX_DEPTH == MAX_PARSER_DEPTH && DB::PARTIAL_AST_MAX_ELEMENTS == MAX_AST_ELEMENTS,
-    "A partial tree is captured within the node limits of an `ast`");
-
 /// The "partial_ast" of a failed parse. Not read back: it contains an `Error` node, which
 /// `ch_format_json` rejects by design, and without it the tree is still not one the reader accepts -
 /// a `SELECT` with no select list, an `INSERT` with no table. So it is held to what can be checked
@@ -426,6 +422,8 @@ int ch_parse(const char * query, uint32_t size)
 {
 #if !defined(CLICKHOUSE_PARSER_NO_FORMATTING)
     DB::PartialASTState partial_ast_state;
+    partial_ast_state.max_depth = MAX_PARSER_DEPTH;
+    partial_ast_state.max_elements = MAX_AST_ELEMENTS;
 #endif
     DB::ParserDiagnostics diagnostics;
     diagnostics.expected.enable_highlighting = true;
@@ -502,10 +500,10 @@ int ch_parse(const char * query, uint32_t size)
         /// `INSERT ... SELECT 1 +` that recovers past it still failed in it.
         const DB::ASTPtr & partial_ast = partial_ast_state.tree;
         if (parsed == 0 && partial_ast
-            && (partial_ast->as<DB::ASTSelectQuery>() || partial_ast_state.pos == diagnostics.expected.max_parsed_pos))
+            && (partial_ast->as<DB::ASTSelectQuery>() || partial_ast_state.tree_pos == diagnostics.expected.max_parsed_pos))
         {
-
-            /// The `Error` is a child of the root, or the last element of a list that it ends.
+            /// The `Error` can be anywhere in the tree: in a slot of the root, in the last element of a
+            /// list, or deeper in a captured part of a statement.
             std::vector<DB::IAST *> nodes{partial_ast.get()};
             while (!nodes.empty())
             {

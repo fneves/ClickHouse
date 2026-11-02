@@ -145,7 +145,7 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         /// Read function name
         if (!table_function_p.parse(pos, table_function, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "table_function");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "table_function");
             return false;
         }
 
@@ -154,7 +154,7 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         {
             if (!exp_elem_p.parse(pos, partition_by_expr, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "partition_by");
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "partition_by");
                 return false;
             }
         }
@@ -164,7 +164,7 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         /// Read one word. It can be table or database name.
         if (!name_p.parse(pos, table, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "table");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "table");
             return false;
         }
 
@@ -175,7 +175,7 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
             database = table;
             if (!name_p.parse(pos, table, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "table");
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "table");
                 return false;
             }
         }
@@ -189,7 +189,7 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         if (!columns_p.parse(pos, columns, expected))
         {
             /// Captured before the rewind, for `INSERT INTO t (`; reported only if nothing gets further.
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "columns");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "columns");
 
             /// Column list parsing failed entirely (e.g. "((SELECT ..." where the second '(' is not a valid column name).
             /// Rewind to before the '(' so it can be parsed as part of a SELECT query later.
@@ -205,7 +205,7 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
             if (!s_rparen.ignore(pos, expected))
             {
                 /// Likewise, for `INSERT INTO t (a,`.
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "columns");
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "columns");
 
                 columns.reset();
                 pos = before_lparen;
@@ -231,7 +231,7 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         /// Read file name to process it later
         if (!infile_name_p.parse(pos, infile, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "infile");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "infile");
             return false;
         }
 
@@ -242,7 +242,7 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
             ParserStringLiteral compression_p;
             if (!compression_p.parse(pos, compression, expected))
             {
-                PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "compression");
+                PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "compression");
                 return false;
             }
         }
@@ -255,7 +255,7 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         ParserSetQuery parser_settings(true);
         if (!parser_settings.parse(pos, settings_ast, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "settings_ast");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "settings_ast");
             return false;
         }
     }
@@ -279,7 +279,7 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         /// If FORMAT is defined, read format name
         if (!name_p.parse(pos, format, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "format");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "format");
             return false;
         }
 
@@ -318,7 +318,7 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         /// FORMAT section is expected if we have input() in SELECT part
         if (s_format.ignore(pos, expected) && !name_p.parse(pos, format, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "format");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "format");
             return false;
         }
 
@@ -327,7 +327,7 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     else if (!infile)
     {
         /// If all previous conditions were false and it's not FROM INFILE, query is incorrect
-        PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "select");
+        PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "select");
         return false;
     }
 
@@ -348,7 +348,7 @@ bool ParserInsertQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
         ParserSetQuery parser_settings(true);
         if (!parser_settings.parse(pos, settings_ast, expected))
         {
-            PARTIAL_AST_SNAPSHOT(expected, tree_so_far(), pos, "settings_ast");
+            PARTIAL_AST_CAPTURE(expected, tree_so_far(), pos, "settings_ast");
             return false;
         }
         /// In case of INSERT INTO ... VALUES SETTINGS ... (...), (...), ...

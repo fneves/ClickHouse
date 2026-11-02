@@ -111,11 +111,13 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   error was reported by throwing, and in a `-DENABLE_FORMATTING=OFF` build. These statements
   capture:
   * `SELECT` (in its `FROM`-first form too): its select list, `FROM` (with the column alias list
-    that can follow the tables, `FROM t FINAL (a, b)`), `PREWHERE`, `WHERE`,
+    that can follow the tables, `FROM t FINAL (a, b)`; a list of tables or joins that failed after
+    its first element, `FROM t JOIN u ON a =`, `FROM t,`, `FROM t JOIN u USING (`, has the `Error` as
+    one more element of `tables`), `PREWHERE`, `WHERE`,
     `GROUP BY` (with the `WITH ROLLUP`, `WITH CUBE` and `WITH TOTALS` after it, in `group_by` even
     when there is no `GROUP BY`), `HAVING`, `WINDOW`, `QUALIFY`, `ORDER BY`, `LIMIT` (with its
-    `OFFSET` and `BY`), `OFFSET` on its own, `FETCH` (in `limit_length`, which it is in `ast`)
-    and `SETTINGS`;
+    `OFFSET` and `BY`, and a range that failed after `AFTER` or `UNTIL`), `OFFSET` on its own,
+    `FETCH` (in `limit_length`, which it is in `ast`) and `SETTINGS`;
   * `INSERT`: the table or table function, `PARTITION BY`, the column list, `FROM INFILE`,
     `COMPRESSION`, `SETTINGS`, `FORMAT`, and a missing data source (`INSERT INTO t`), which is an
     `Error` in `select`, the one source that `ast` has as a tree;
@@ -144,7 +146,9 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
     with a command keyword is an `Error` after the ones before it (`ALTER TABLE t DROP COLUMN a,`),
     or `command_list` as a whole when there are none (`ALTER TABLE t`). A field that only a later
     keyword decides has its default value: `ALTER TABLE t MOVE PARTITION 1 TO` reports
-    `move_destination_type: "DISK"`, as the keyword after `TO` is what is missing.
+    `move_destination_type: "DISK"`, as the keyword after `TO` is what is missing. The `db` of a
+    `db.` that has no table name yet is kept (`ALTER TABLE t MOVE PARTITION 1 TO TABLE db.` reports
+    `to_database`, and `ATTACH PARTITION ... FROM db.` `from_database`).
 * Its root is the deepest statement node that captured: the one whose failure got furthest into
   the query, and of statements nested in each other that failed at the same place, the innermost.
   `SELECT * FROM (SELECT a FROM` reports the subquery, `INSERT INTO t SELECT a FROM` the
@@ -199,7 +203,9 @@ so far, as `partial_ast`, right after `error` (`SELECT a FROM`):
   them is not reported at all, and neither is a statement around it that failed at the same
   place - `SELECT 1 + 1 + ... FROM` with a few thousand terms has no `partial_ast`, and neither
   has `SELECT * FROM (SELECT 1 + 1 + ... FROM` - because copying it could exhaust the engine's
-  stack. One that fits until its
+  stack. For the same reason a capture is skipped, without an error, where too little of the stack
+  is left to copy the tree: a deep nesting of subqueries that fails at its end reports the syntax
+  error and no `partial_ast`, the same as a parse without the capture. One that fits until its
   `Error` is added, or whose JSON runs into the stack check, is `"partial_ast": null` with
   `partial_ast_error`, and so is one whose JSON is larger than 1 MiB or nested more than 2000
   levels deep, the limits of a document `ch_format_json` reads. It is not held to the element
@@ -253,10 +259,10 @@ frame in between is still compiled and optimized as part of the whole.
 artifact, so a consumer does not have to build anything:
 
 ```
-https://clickhouse-builds.s3.amazonaws.com/REFs/master/<sha>/build_wasm_parser/parser.wasm
-https://clickhouse-builds.s3.amazonaws.com/REFs/master/<sha>/build_wasm_parser/parser-no-formatting-no-dcl.wasm
+https://clickhouse-builds.s3.amazonaws.com/REFs/master/<sha>/masterci/build_wasm_parser/parser.wasm
+https://clickhouse-builds.s3.amazonaws.com/REFs/master/<sha>/masterci/build_wasm_parser/parser-no-formatting-no-dcl.wasm
 
-https://clickhouse-builds.s3.amazonaws.com/PRs/<pr>/<sha>/build_wasm_parser/parser.wasm
+https://clickhouse-builds.s3.amazonaws.com/PRs/<pr>/<sha>/pr/build_wasm_parser/parser.wasm
 ```
 
 There is nothing else to download. Unlike the Emscripten build of the whole server

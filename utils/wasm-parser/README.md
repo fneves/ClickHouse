@@ -277,14 +277,17 @@ with wasi-sdk 33:
 
 | build | bytes | gzip -9 | brotli -q 11 | zstd --ultra -22 |
 | --- | ---: | ---: | ---: | ---: |
-| everything | 2165295 | 662555 | 487368 | 518518 |
-| `-DENABLE_DCL=OFF` | 1956209 | 594869 | 437894 | 466120 |
-| `-DENABLE_FORMATTING=OFF` | 1110884 | 364433 | 279158 | 299371 |
-| both off | 892194 | 285446 | 219447 | 235417 |
+| everything | 2166481 | 660976 | 484978 | 515942 |
+| `-DENABLE_DCL=OFF` | 1950578 | 591649 | 434173 | 461506 |
+| `-DENABLE_FORMATTING=OFF` | 1061574 | 351324 | 269716 | 288862 |
+| both off | 844908 | 273144 | 210699 | 225756 |
 
-The builds without formatting do not report `partial_ast`, but still carry the capture code of
-the parsers, about 49 KB raw and 9 KB brotli: capture is switched on at run time, by
-`Expected::partial_ast`, so LTO cannot drop it.
+The builds without formatting do not report `partial_ast`, and do not carry the capture code of the
+parsers either: `partialASTState` in `Parsers/PartialASTCapture.h` is a null pointer there at compile
+time, so the compiler drops every capture. In the other builds capture is switched on at run time,
+by `Expected::partial_ast`, so LTO cannot drop it.
+
+The numbers are from a local build with wasi-sdk 33; the CI build differs by up to 0.2%.
 
 Formatting builds carry the AST JSON machinery, which is most of their weight: `writeJSON` and
 `readJSON` for every node, `Poco::JSON` and `Poco::Dynamic::Var` cost about 715 KB raw and
@@ -293,10 +296,9 @@ the latter is in every build and the former goes with `-DENABLE_FORMATTING=OFF`.
 
 Brotli is what a browser will actually get, and it is 25% better than gzip here.
 
-`MAX_SIZE_*` in `CMakeLists.txt` holds a ceiling above each of these, set about 8% over when last
-raised, which the
-`parser-size` test asserts. Raise the ceiling and update this table in the same change as any
-growth that is meant to happen.
+`MAX_SIZE_*` in `CMakeLists.txt` holds a ceiling above each of these, 0.3% to 3.5% over when last
+raised, which the `parser-size` test asserts. Raise the ceiling and update this table in the same
+change as any growth that is meant to happen.
 
 The first version of this build was 2.7 MB. Most of what went is listed under "What is left out";
 the rest came from compiling for size rather than speed, from dropping locale support, and from
@@ -315,15 +317,15 @@ Sorted by brotli, which is what a browser negotiates:
 | [`@clickhouse/parser`](https://github.com/ClickHouse/clickhouse-js-parser) 0.3.0 + `zod`, JS | 1128583 | 196944 | 153347 | 161974 |
 | [`libpg-query`](https://github.com/launchql/libpg-query-node) 17.7.4, wasm | 1150984 | 229158 | 168575 | 176785 |
 | — its emscripten glue, on top of that | 58903 | 16679 | 14888 | 15718 |
-| **this, both off** | 809522 | 259966 | 201885 | 216148 |
+| **this, both off** | 844908 | 273144 | 210699 | 225756 |
 | [`sql.js`](https://github.com/sql-js/sql.js) 1.14.1, wasm | 659730 | 322193 | 278641 | 289690 |
 | `node-sql-parser` 5.4.0, all 20+ dialects, JS | 2609025 | 504010 | 333174 | 360819 |
-| **this, everything** | 2052426 | 632776 | 467840 | 496186 |
+| **this, everything** | 2166481 | 660976 | 484978 | 515942 |
 | [`@polyglot-sql/sdk`](https://github.com/tobilg/polyglot) 0.6.2, wasm | 21656938 | 4805067 | 2020675 | 2150089 |
 
 The row to measure against is **`libpg-query`**: the same idea, a production database's own parser
 compiled to WebAssembly rather than reimplemented. With its glue it is 183463 brotli against this
-build's 201885 — the same ballpark, for a grammar of comparable size. The full build is not that
+build's 210699 — the same ballpark, for a grammar of comparable size. The full build is not that
 comparison: none of the others ship an AST-as-JSON interface in both directions, which is what
 separates its row from the minimal one.
 

@@ -467,7 +467,7 @@ bool ParserSelectQuery::parseImpl(Pos & pos, ASTPtr & node, Expected & expected)
     /// `LIMIT after`, only a range that got past its start boundary is one.
     auto capture_limit_range = [&](LimitRangeFailure & failure, bool after_count)
     {
-        if (likely(!expected.partial_ast) || !failure.failed || !(after_count || failure.start))
+        if (likely(!partialASTState(expected)) || !failure.failed || !(after_count || failure.start))
             return;
         std::swap(limit_after, failure.start);
         std::swap(select_query->limit_after_all, failure.start_all);

@@ -4,7 +4,7 @@
 /// WebAssembly parser (`utils/wasm-parser`) reports it as `partial_ast`.
 ///
 /// Capture is off unless the caller points `Expected::partial_ast` at a `PartialASTState`. In the server
-/// the pointer is always null. Each hook then costs one branch on the pointer, taken before any other
+/// the pointer is always null, and in a build without formatting it is null at compile time. Each hook then costs one branch on the pointer, taken before any other
 /// argument is evaluated, so a failure path neither allocates nor copies anything for capture. A parser
 /// that assembles the tree so far also builds a closure of references to its locals on each call, which is
 /// a few stores and no allocation, and `ParserSelectQuery` holds a `PartialASTSelectScope`, which is one
@@ -79,6 +79,19 @@ struct PartialASTState
     }
 };
 
+/// The state that capture writes to, or null with capture off. A build that cannot report a partial tree,
+/// the WebAssembly parser without formatting, has it null at compile time, so the compiler drops every
+/// capture of the parsers, and the macros and scopes below get it through this function only.
+ALWAYS_INLINE inline PartialASTState * partialASTState(const Expected & expected)
+{
+#if defined(CLICKHOUSE_PARSER_NO_FORMATTING)
+    (void)expected;
+    return nullptr;
+#else
+    return expected.partial_ast;
+#endif
+}
+
 /// Whether a capture can be taken now, with capture on. It is false at a position that an earlier capture
 /// went past, and when too little stack is left to clone a tree, which does not throw. In that case no
 /// capture is taken at this position, and the parse goes on as it does with capture off. The macros call
@@ -117,7 +130,7 @@ class PartialASTSelectScope
 {
 public:
     explicit PartialASTSelectScope(const Expected & expected)
-        : state(expected.partial_ast)
+        : state(partialASTState(expected))
     {
         if (unlikely(state))
             ++state->select_depth;
@@ -143,7 +156,7 @@ class PartialASTOuterWith
 {
 public:
     PartialASTOuterWith(const Expected & expected, const ASTPtr & with)
-        : state(expected.partial_ast)
+        : state(partialASTState(expected))
     {
         if (unlikely(state))
         {
@@ -177,7 +190,7 @@ class PartialASTSavepoint
 {
 public:
     explicit PartialASTSavepoint(const Expected & expected)
-        : state(expected.partial_ast)
+        : state(partialASTState(expected))
     {
         if (unlikely(state))
             saved = *state;
@@ -208,7 +221,7 @@ private:
 #define PARTIAL_AST_CAPTURE(expected, node, pos, slot) \
     do \
     { \
-        if (unlikely((expected).partial_ast) && ::DB::canCapturePartialAST(expected)) \
+        if (unlikely(::DB::partialASTState(expected)) && ::DB::canCapturePartialAST(expected)) \
             ::DB::capturePartialAST(expected, node, pos, slot); \
     } while (false)
 
@@ -216,27 +229,27 @@ private:
 #define PARTIAL_AST_CAPTURE_IF(expected, condition, node, pos, slot) \
     do \
     { \
-        if (unlikely((expected).partial_ast) && (condition) && ::DB::canCapturePartialAST(expected)) \
+        if (unlikely(::DB::partialASTState(expected)) && (condition) && ::DB::canCapturePartialAST(expected)) \
             ::DB::capturePartialAST(expected, node, pos, slot); \
     } while (false)
 
 #define PARTIAL_AST_CAPTURE_FRAGMENT(expected, node, pos, slot_key) \
     do \
     { \
-        if (unlikely((expected).partial_ast) && ::DB::canCapturePartialAST(expected)) \
+        if (unlikely(::DB::partialASTState(expected)) && ::DB::canCapturePartialAST(expected)) \
             ::DB::capturePartialFragment(expected, node, pos, slot_key); \
     } while (false)
 
 #define PARTIAL_AST_CAPTURE_FRAGMENT_IF(expected, condition, node, pos, slot_key) \
     do \
     { \
-        if (unlikely((expected).partial_ast) && (condition) && ::DB::canCapturePartialAST(expected)) \
+        if (unlikely(::DB::partialASTState(expected)) && (condition) && ::DB::canCapturePartialAST(expected)) \
             ::DB::capturePartialFragment(expected, node, pos, slot_key); \
     } while (false)
 
 #define PARTIAL_AST_CAPTURE_LIST_ELEMENT(expected, node, pos) \
     do \
     { \
-        if (unlikely((expected).partial_ast) && ::DB::canCapturePartialAST(expected)) \
+        if (unlikely(::DB::partialASTState(expected)) && ::DB::canCapturePartialAST(expected)) \
             ::DB::capturePartialListElement(expected, node, pos); \
     } while (false)

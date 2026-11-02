@@ -611,8 +611,8 @@ bool ParserTablePropertiesDeclarationList::parseImpl(Pos & pos, ASTPtr & node, E
     if (primary_key_from_columns)
         res->set(res->primary_key_from_columns, primary_key_from_columns);
 
-    if (unlikely(expected.partial_ast))
-        expected.partial_ast->last_column_element = list->children.back();
+    if (PartialASTState * state = partialASTState(expected); unlikely(state))
+        state->last_column_element = list->children.back();
 
     node = res;
 
